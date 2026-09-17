@@ -124,14 +124,12 @@ nomes das pastas como Setor/Funcionário/Ano e o nome do arquivo como Mês —
 2. A tabela mostra os 12 meses do ano com o status de cada um.
 3. Dê duplo clique em um mês entregue para abrir o PDF.
 
-### Aba "Funcionários e Setores"
-
-- Lista todos os funcionários cadastrados com seus respectivos setores.
-- **Excluir Funcionário Selecionado**: remove apenas o cadastro do
-  funcionário (e seu histórico de frequências) do banco — os PDFs no
-  servidor **não** são apagados.
-- **Excluir Setor**: remove um setor inteiro (e todos os funcionários e
-  frequências dele) do banco — os PDFs no servidor **não** são apagados.
+> O programa é usado por várias pessoas no mesmo banco de dados
+> compartilhado no servidor do RH, por isso não existe (propositalmente)
+> nenhuma tela para excluir funcionário, setor ou frequência — um clique
+> errado apagaria cadastro de outra pessoa. Correções (nome digitado errado,
+> setor duplicado, etc.) exigem edição direta do arquivo `freqcontrol.db`
+> (por exemplo, com o [DB Browser for SQLite](https://sqlitebrowser.org/)).
 
 ## Estrutura do banco de dados (SQLite)
 

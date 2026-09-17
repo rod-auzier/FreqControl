@@ -213,10 +213,6 @@ class Banco:
         self.conn.commit()
         return cur.lastrowid
 
-    def excluir_setor(self, setor_id):
-        self.conn.execute("DELETE FROM setores WHERE id = ?", (setor_id,))
-        self.conn.commit()
-
     # ---- Funcionários ----
     def listar_funcionarios(self, setor_id=None):
         if setor_id is None:
@@ -253,10 +249,6 @@ class Banco:
         )
         self.conn.commit()
         return cur.lastrowid
-
-    def excluir_funcionario(self, funcionario_id):
-        self.conn.execute("DELETE FROM funcionarios WHERE id = ?", (funcionario_id,))
-        self.conn.commit()
 
     # ---- Frequências ----
     def obter_frequencia(self, funcionario_id, mes, ano):
@@ -871,97 +863,6 @@ class AbaConsultaFuncionario(ttk.Frame):
 
 
 # ---------------------------------------------------------------------------
-# Aba 4: Funcionários e setores
-# ---------------------------------------------------------------------------
-
-class AbaGerenciar(ttk.Frame):
-    def __init__(self, master, banco, app):
-        super().__init__(master)
-        self.banco = banco
-        self.app = app
-        self._construir_interface()
-
-    def _construir_interface(self):
-        container_tabela = ttk.Frame(self)
-        container_tabela.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
-
-        self.tree = ttk.Treeview(container_tabela, columns=("funcionario", "setor"), show="headings")
-        self.tree.heading("funcionario", text="Funcionário")
-        self.tree.heading("setor", text="Setor")
-        self.tree.column("funcionario", width=480, anchor=tk.W, stretch=True)
-        self.tree.column("setor", width=140, anchor=tk.W, stretch=False)
-
-        barra_vertical = ttk.Scrollbar(container_tabela, orient=tk.VERTICAL, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=barra_vertical.set)
-        barra_vertical.pack(side=tk.RIGHT, fill=tk.Y)
-        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        botoes = ttk.Frame(self)
-        botoes.pack(fill=tk.X, padx=8, pady=(0, 8))
-        ttk.Button(
-            botoes, text="Excluir Funcionário Selecionado", command=self._excluir_funcionario
-        ).pack(side=tk.LEFT)
-
-        ttk.Separator(self, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=8, pady=4)
-
-        frame_setor = ttk.Frame(self)
-        frame_setor.pack(fill=tk.X, padx=8, pady=(0, 8))
-        ttk.Label(frame_setor, text="Excluir setor inteiro:").pack(side=tk.LEFT)
-        self.combo_setor = ttk.Combobox(frame_setor, state="readonly", width=30)
-        self.combo_setor.pack(side=tk.LEFT, padx=6)
-        ttk.Button(frame_setor, text="Excluir Setor", command=self._excluir_setor).pack(side=tk.LEFT)
-
-    def atualizar(self):
-        self.tree.delete(*self.tree.get_children())
-        for funcionario in self.banco.listar_funcionarios():
-            self.tree.insert(
-                "", tk.END, iid=str(funcionario["id"]),
-                values=(funcionario["nome"], funcionario["setor_nome"]),
-            )
-        self.combo_setor["values"] = [s["nome"] for s in self.banco.listar_setores()]
-
-    def _excluir_funcionario(self):
-        selecao = self.tree.selection()
-        if not selecao:
-            messagebox.showwarning(APP_NOME, "Selecione um funcionário na lista.", parent=self)
-            return
-        funcionario_id = int(selecao[0])
-        valores = self.tree.item(selecao[0], "values")
-        confirmar = messagebox.askyesno(
-            APP_NOME,
-            f"Excluir o cadastro de '{valores[0]}' ({valores[1]})?\n\n"
-            "Isso remove apenas o cadastro e o histórico de frequências no banco de "
-            "dados — os arquivos PDF no servidor NÃO serão apagados.",
-            parent=self,
-        )
-        if not confirmar:
-            return
-        self.banco.excluir_funcionario(funcionario_id)
-        self.app.atualizar_todas_abas()
-
-    def _excluir_setor(self):
-        nome_setor = self.combo_setor.get().strip()
-        if not nome_setor:
-            messagebox.showwarning(APP_NOME, "Selecione um setor.", parent=self)
-            return
-        setor = buscar_setor_por_nome(self.banco, nome_setor)
-        if not setor:
-            return
-        confirmar = messagebox.askyesno(
-            APP_NOME,
-            f"Excluir o setor '{nome_setor}' inteiro?\n\n"
-            "Isso remove o setor, todos os seus funcionários e o histórico de "
-            "frequências cadastrados no banco de dados. Os arquivos PDF no "
-            "servidor NÃO serão apagados.",
-            parent=self,
-        )
-        if not confirmar:
-            return
-        self.banco.excluir_setor(setor["id"])
-        self.app.atualizar_todas_abas()
-
-
-# ---------------------------------------------------------------------------
 # Aplicativo principal
 # ---------------------------------------------------------------------------
 
@@ -989,18 +890,15 @@ class AplicativoFreqControl:
         self.aba_catalogar = AbaCatalogar(notebook, banco, self)
         self.aba_consulta_mes = AbaConsultaMes(notebook, banco, self)
         self.aba_consulta_funcionario = AbaConsultaFuncionario(notebook, banco, self)
-        self.aba_gerenciar = AbaGerenciar(notebook, banco, self)
 
         notebook.add(self.aba_catalogar, text="Catalogar PDFs")
         notebook.add(self.aba_consulta_mes, text="Consultar por Mês")
         notebook.add(self.aba_consulta_funcionario, text="Consultar por Funcionário")
-        notebook.add(self.aba_gerenciar, text="Funcionários e Setores")
 
         self.abas = (
             self.aba_catalogar,
             self.aba_consulta_mes,
             self.aba_consulta_funcionario,
-            self.aba_gerenciar,
         )
 
         self.atualizar_todas_abas()
@@ -1058,7 +956,6 @@ class AplicativoFreqControl:
         for aba in self.abas:
             if hasattr(aba, "atualizar_setores"):
                 aba.atualizar_setores()
-        self.aba_gerenciar.atualizar()
 
 
 def main():
