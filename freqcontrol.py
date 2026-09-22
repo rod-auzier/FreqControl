@@ -31,6 +31,45 @@ MESES = [
 
 COR_OK = "#dff0d8"
 COR_FALTA = "#f2dede"
+COR_TEM_ENTREGA = "#c9ecc9"
+
+TEXTO_COMO_USAR = """Como usar o FreqControl
+
+1. Catalogar PDFs
+   Menu Arquivo > Catalogar PDFs...
+
+   Selecione a pasta raiz onde as frequências estão organizadas
+   (Setor / Funcionário / Ano / Mês.pdf). O programa lista os arquivos
+   que ainda não foram cadastrados.
+
+   - Para cadastrar um por um: selecione o arquivo, confira abrindo o
+     PDF, preencha Setor/Funcionário/Mês/Ano e clique em Salvar.
+   - Para cadastrar tudo de uma vez: se as pastas já estiverem
+     organizadas certinho, use o botão "Cadastrar Todos os Pendentes",
+     que usa o nome das próprias pastas.
+
+2. Consultar por Mês
+   Escolha o mês e o ano e clique em Consultar. A tabela mostra todos
+   os funcionários e se a frequência daquele mês já foi entregue ou
+   está faltando. Dê duplo clique numa linha entregue para abrir o
+   PDF. Use "Exportar CSV" para gerar uma planilha com o resultado.
+
+3. Consulta Detalhada
+   Escolha um Setor (obrigatório), opcionalmente um Funcionário
+   específico, e o Ano, depois clique em Consultar. A grade mostra os
+   12 meses de cada funcionário: ✔ para entregue, ✘ para faltando.
+   Linhas com fundo verde indicam que aquele funcionário já entregou
+   pelo menos um mês naquele ano. Dê duplo clique num mês com ✔ para
+   abrir o PDF correspondente.
+
+4. Trocar o banco de dados
+   Menu Arquivo > Alterar pasta do banco de dados..., caso precise
+   apontar o programa para outro arquivo freqcontrol.db (por exemplo,
+   ao trocar de servidor).
+
+Os arquivos PDF nunca são movidos, copiados ou apagados pelo
+programa — ele só guarda o caminho de onde cada um já está.
+"""
 
 ERROR_MORE_DATA = 234
 UNIVERSAL_NAME_INFO_LEVEL = 1
@@ -292,12 +331,47 @@ class Banco:
         )
         return cur.fetchall()
 
-    def status_ano(self, funcionario_id, ano):
+    def status_ano_setor(self, setor_id, ano, funcionario_id=None):
+        """Status dos 12 meses de um ano para os funcionários de um setor.
+
+        Se funcionario_id for None, retorna as linhas de TODOS os
+        funcionários do setor (ordenados por nome); caso contrário, só as
+        do funcionário informado. Cada linha é um dict com funcionario_id,
+        funcionario_nome, mes (1-12) e caminho (None se faltando).
+        """
+        funcionarios = self.listar_funcionarios(setor_id)
+        if funcionario_id is not None:
+            funcionarios = [f for f in funcionarios if f["id"] == funcionario_id]
+        if not funcionarios:
+            return []
+
+        ids_funcionarios = [f["id"] for f in funcionarios]
+        marcadores = ",".join("?" for _ in ids_funcionarios)
         cur = self.conn.execute(
-            "SELECT mes, caminho_arquivo FROM frequencias WHERE funcionario_id = ? AND ano = ?",
-            (funcionario_id, ano),
+            f"""
+            SELECT funcionario_id, mes, caminho_arquivo
+            FROM frequencias
+            WHERE ano = ? AND funcionario_id IN ({marcadores})
+            """,
+            (ano, *ids_funcionarios),
         )
-        return {linha["mes"]: linha["caminho_arquivo"] for linha in cur.fetchall()}
+        caminhos = {
+            (linha["funcionario_id"], linha["mes"]): linha["caminho_arquivo"]
+            for linha in cur.fetchall()
+        }
+
+        resultado = []
+        for funcionario in funcionarios:
+            for numero_mes in range(1, 13):
+                resultado.append(
+                    {
+                        "funcionario_id": funcionario["id"],
+                        "funcionario_nome": funcionario["nome"],
+                        "mes": numero_mes,
+                        "caminho": caminhos.get((funcionario["id"], numero_mes)),
+                    }
+                )
+        return resultado
 
     def fechar(self):
         self.conn.close()
@@ -765,11 +839,15 @@ class AbaConsultaMes(ttk.Frame):
 # Aba 3: Consultar por funcionário
 # ---------------------------------------------------------------------------
 
+COLUNAS_MES = [f"mes{numero:02d}" for numero in range(1, 13)]
+
+
 class AbaConsultaFuncionario(ttk.Frame):
     def __init__(self, master, banco, app):
         super().__init__(master)
         self.banco = banco
         self.app = app
+        self.caminhos_por_linha = {}
         self._construir_interface()
 
     def _construir_interface(self):
@@ -792,31 +870,39 @@ class AbaConsultaFuncionario(ttk.Frame):
 
         ttk.Button(topo, text="Consultar", command=self._consultar).pack(side=tk.LEFT)
 
+        container_tabela = ttk.Frame(self)
+        container_tabela.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 4))
+
         self.tree = ttk.Treeview(
-            self,
-            columns=("mes", "status", "caminho"),
-            displaycolumns=("mes", "status"),
+            container_tabela,
+            columns=("funcionario", *COLUNAS_MES),
             show="headings",
             selectmode="browse",
         )
-        self.tree.heading("mes", text="Mês")
-        self.tree.heading("status", text="Status")
-        self.tree.column("mes", width=160, anchor=tk.W, stretch=False)
-        self.tree.column("status", width=140, anchor=tk.CENTER, stretch=False)
-        self.tree.tag_configure("ok", background=COR_OK)
-        self.tree.tag_configure("falta", background=COR_FALTA)
-        self.tree.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 4))
+        self.tree.heading("funcionario", text="Funcionário")
+        self.tree.column("funcionario", width=230, anchor=tk.W, stretch=False)
+        for indice, coluna in enumerate(COLUNAS_MES):
+            self.tree.heading(coluna, text=MESES[indice][:3])
+            self.tree.column(coluna, width=45, anchor=tk.CENTER, stretch=False)
+
+        self.tree.tag_configure("tem_entrega", background=COR_TEM_ENTREGA)
+
+        barra_vertical = ttk.Scrollbar(container_tabela, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=barra_vertical.set)
+        barra_vertical.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.tree.bind("<Double-1>", self._ao_dar_duplo_clique)
 
-        ttk.Label(self, text="Dica: dê duplo clique em um mês entregue para abrir o PDF.").pack(
-            anchor=tk.W, padx=8, pady=(0, 8)
-        )
+        ttk.Label(
+            self, text="Dica: dê duplo clique num mês com ✔ para abrir o PDF correspondente."
+        ).pack(anchor=tk.W, padx=8, pady=(0, 8))
 
     def atualizar_setores(self):
         self.combo_setor["values"] = [s["nome"] for s in self.banco.listar_setores()]
         self.combo_funcionario.set("")
         self.combo_funcionario["values"] = []
         self.tree.delete(*self.tree.get_children())
+        self.caminhos_por_linha = {}
 
     def _ao_mudar_setor(self, event=None):
         setor = buscar_setor_por_nome(self.banco, self.combo_setor.get())
@@ -832,30 +918,65 @@ class AbaConsultaFuncionario(ttk.Frame):
         if not setor:
             messagebox.showwarning(APP_NOME, "Selecione um setor válido.", parent=self)
             return
-        funcionario = buscar_funcionario_por_nome(self.banco, setor["id"], self.combo_funcionario.get())
-        if not funcionario:
-            messagebox.showwarning(APP_NOME, "Selecione um funcionário válido.", parent=self)
-            return
+
+        nome_funcionario = self.combo_funcionario.get().strip()
+        funcionario_id = None
+        if nome_funcionario:
+            funcionario = buscar_funcionario_por_nome(self.banco, setor["id"], nome_funcionario)
+            if not funcionario:
+                messagebox.showwarning(
+                    APP_NOME, "Funcionário inválido para o setor selecionado.", parent=self
+                )
+                return
+            funcionario_id = funcionario["id"]
+
         ano_texto = self.entrada_ano.get().strip()
         if not ano_texto.isdigit():
             messagebox.showwarning(APP_NOME, "Informe um ano válido.", parent=self)
             return
         ano = int(ano_texto)
 
-        mapa = self.banco.status_ano(funcionario["id"], ano)
+        linhas = self.banco.status_ano_setor(setor["id"], ano, funcionario_id)
         self.tree.delete(*self.tree.get_children())
-        for numero_mes, nome_mes in enumerate(MESES, start=1):
-            caminho = mapa.get(numero_mes)
-            status = "Entregue" if caminho else "Faltando"
-            tag = "ok" if caminho else "falta"
-            self.tree.insert("", tk.END, values=(nome_mes, status, caminho or ""), tags=(tag,))
-
-    def _ao_dar_duplo_clique(self, event=None):
-        selecao = self.tree.selection()
-        if not selecao:
+        self.caminhos_por_linha = {}
+        if not linhas:
+            messagebox.showinfo(APP_NOME, "Não há funcionários cadastrados nesse setor.", parent=self)
             return
-        valores = self.tree.item(selecao[0], "values")
-        caminho = valores[2]
+
+        # Agrupa as linhas (funcionario, mes, caminho) por funcionário, mantendo a
+        # ordem em que já vêm do banco (alfabética por funcionário, depois por mês).
+        por_funcionario = {}
+        ordem_funcionarios = []
+        for linha in linhas:
+            funcionario_id_linha = linha["funcionario_id"]
+            if funcionario_id_linha not in por_funcionario:
+                por_funcionario[funcionario_id_linha] = {
+                    "nome": linha["funcionario_nome"],
+                    "meses": {},
+                }
+                ordem_funcionarios.append(funcionario_id_linha)
+            por_funcionario[funcionario_id_linha]["meses"][linha["mes"]] = linha["caminho"]
+
+        for funcionario_id_linha in ordem_funcionarios:
+            dados = por_funcionario[funcionario_id_linha]
+            meses_caminhos = dados["meses"]
+            valores = [dados["nome"]] + [
+                "✔" if meses_caminhos.get(numero_mes) else "✘" for numero_mes in range(1, 13)
+            ]
+            tags = ("tem_entrega",) if any(meses_caminhos.values()) else ()
+            iid = str(funcionario_id_linha)
+            self.tree.insert("", tk.END, iid=iid, values=valores, tags=tags)
+            self.caminhos_por_linha[iid] = meses_caminhos
+
+    def _ao_dar_duplo_clique(self, event):
+        linha_id = self.tree.identify_row(event.y)
+        coluna_id = self.tree.identify_column(event.x)
+        if not linha_id or not coluna_id or coluna_id == "#1":
+            return
+        indice_mes = int(coluna_id[1:]) - 1
+        if not 1 <= indice_mes <= 12:
+            return
+        caminho = self.caminhos_por_linha.get(linha_id, {}).get(indice_mes)
         if caminho:
             abrir_pdf(caminho, self)
         else:
@@ -882,21 +1003,22 @@ class AplicativoFreqControl:
             except tk.TclError:
                 continue
 
+        self.aba_catalogar = None
+        self._janela_catalogar = None
+        self._janela_ajuda = None
+
         self._construir_menu()
 
         notebook = ttk.Notebook(root)
         notebook.pack(fill=tk.BOTH, expand=True)
 
-        self.aba_catalogar = AbaCatalogar(notebook, banco, self)
         self.aba_consulta_mes = AbaConsultaMes(notebook, banco, self)
         self.aba_consulta_funcionario = AbaConsultaFuncionario(notebook, banco, self)
 
-        notebook.add(self.aba_catalogar, text="Catalogar PDFs")
         notebook.add(self.aba_consulta_mes, text="Consultar por Mês")
-        notebook.add(self.aba_consulta_funcionario, text="Consultar por Funcionário")
+        notebook.add(self.aba_consulta_funcionario, text="Consulta Detalhada")
 
         self.abas = (
-            self.aba_catalogar,
             self.aba_consulta_mes,
             self.aba_consulta_funcionario,
         )
@@ -906,6 +1028,7 @@ class AplicativoFreqControl:
     def _construir_menu(self):
         barra_menu = tk.Menu(self.root)
         menu_arquivo = tk.Menu(barra_menu, tearoff=0)
+        menu_arquivo.add_command(label="Catalogar PDFs...", command=self._abrir_catalogar)
         menu_arquivo.add_command(
             label="Alterar pasta do banco de dados...", command=self._alterar_pasta_banco
         )
@@ -914,10 +1037,77 @@ class AplicativoFreqControl:
         barra_menu.add_cascade(label="Arquivo", menu=menu_arquivo)
 
         menu_ajuda = tk.Menu(barra_menu, tearoff=0)
+        menu_ajuda.add_command(label="Como usar", command=self._abrir_como_usar)
         menu_ajuda.add_command(label="Sobre", command=self._mostrar_sobre)
         barra_menu.add_cascade(label="Ajuda", menu=menu_ajuda)
 
         self.root.config(menu=barra_menu)
+
+    def _abrir_catalogar(self):
+        if self._janela_catalogar is not None and self._janela_catalogar.winfo_exists():
+            self._janela_catalogar.deiconify()
+            self._janela_catalogar.lift()
+            self._janela_catalogar.focus_force()
+            return
+
+        janela = tk.Toplevel(self.root)
+        janela.title(f"{APP_NOME} — Catalogar PDFs")
+        janela.geometry("950x600")
+        janela.minsize(760, 480)
+
+        self.aba_catalogar = AbaCatalogar(janela, self.banco, self)
+        self.aba_catalogar.pack(fill=tk.BOTH, expand=True)
+        self.aba_catalogar.atualizar_setores()
+
+        janela.protocol("WM_DELETE_WINDOW", self._ao_fechar_catalogar)
+        self._janela_catalogar = janela
+
+    def _ao_fechar_catalogar(self):
+        if self._janela_catalogar is not None:
+            self._janela_catalogar.destroy()
+        self._janela_catalogar = None
+        self.aba_catalogar = None
+
+        # Novos registros podem ter sido cadastrados enquanto a janela estava
+        # aberta — atualiza o que já está sendo exibido nas abas de consulta.
+        self.aba_consulta_mes._consultar()
+        if self.aba_consulta_funcionario.combo_setor.get().strip():
+            self.aba_consulta_funcionario._consultar()
+
+    def _abrir_como_usar(self):
+        if self._janela_ajuda is not None and self._janela_ajuda.winfo_exists():
+            self._janela_ajuda.deiconify()
+            self._janela_ajuda.lift()
+            self._janela_ajuda.focus_force()
+            return
+
+        janela = tk.Toplevel(self.root)
+        janela.title(f"{APP_NOME} — Como usar")
+        janela.geometry("600x500")
+        janela.minsize(400, 300)
+
+        container = ttk.Frame(janela)
+        container.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+
+        barra_vertical = ttk.Scrollbar(container, orient=tk.VERTICAL)
+        texto = tk.Text(
+            container, wrap=tk.WORD, yscrollcommand=barra_vertical.set,
+            font=("Segoe UI", 9), padx=8, pady=8,
+        )
+        barra_vertical.config(command=texto.yview)
+        barra_vertical.pack(side=tk.RIGHT, fill=tk.Y)
+        texto.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        texto.insert("1.0", TEXTO_COMO_USAR)
+        texto.config(state=tk.DISABLED)
+
+        janela.protocol("WM_DELETE_WINDOW", self._ao_fechar_como_usar)
+        self._janela_ajuda = janela
+
+    def _ao_fechar_como_usar(self):
+        if self._janela_ajuda is not None:
+            self._janela_ajuda.destroy()
+        self._janela_ajuda = None
 
     def _mostrar_sobre(self):
         messagebox.showinfo(
@@ -944,6 +1134,8 @@ class AplicativoFreqControl:
         self.banco = novo_banco
         for aba in self.abas:
             aba.banco = novo_banco
+        if self.aba_catalogar is not None:
+            self.aba_catalogar.banco = novo_banco
 
         config = carregar_config()
         config["db_path"] = caminho_db
@@ -956,6 +1148,8 @@ class AplicativoFreqControl:
         for aba in self.abas:
             if hasattr(aba, "atualizar_setores"):
                 aba.atualizar_setores()
+        if self.aba_catalogar is not None:
+            self.aba_catalogar.atualizar_setores()
 
 
 def main():

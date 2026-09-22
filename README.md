@@ -72,9 +72,19 @@ específico de cada usuário/computador.
 Se precisar trocar depois (por exemplo, o caminho do servidor mudou), use o
 menu **Arquivo → Alterar pasta do banco de dados...**
 
+A janela principal mostra as abas de consulta ("Consultar por Mês" e "Consulta
+Detalhada"). A tela de catalogação fica separada, aberta pelo menu
+**Arquivo → Catalogar PDFs...** — assim ela pode ficar aberta numa janela à
+parte enquanto você continua navegando/consultando na janela principal. Ao
+fechá-la, as duas abas de consulta são atualizadas automaticamente com o que
+foi cadastrado.
+
+O menu **Ajuda → Como usar** abre um resumo rápido de todas as telas direto
+dentro do programa, sem precisar consultar este arquivo.
+
 ## Guia de uso
 
-### Aba "Catalogar PDFs"
+### Janela "Catalogar PDFs" (menu Arquivo → Catalogar PDFs...)
 
 1. Clique em **Selecionar Pasta Raiz...** e escolha a pasta que contém a
    estrutura `Setor/Funcionário/Ano/Mês.pdf`.
@@ -118,11 +128,18 @@ nomes das pastas como Setor/Funcionário/Ano e o nome do arquivo como Mês —
 4. Clique em **Exportar CSV** para salvar o resultado da consulta atual
    (separador `;`, codificação compatível com Excel em português).
 
-### Aba "Consultar por Funcionário"
+### Aba "Consulta Detalhada"
 
-1. Escolha o setor, o funcionário e o ano, depois clique em **Consultar**.
-2. A tabela mostra os 12 meses do ano com o status de cada um.
-3. Dê duplo clique em um mês entregue para abrir o PDF.
+1. Escolha o setor e o ano.
+2. **Funcionário é opcional**:
+   - Deixe em branco e clique em **Consultar** para ver **todos os
+     funcionários do setor** de uma vez, em formato de grade: uma linha por
+     funcionário, uma coluna para cada mês (Jan a Dez), ordenados por nome.
+   - Escolha um funcionário específico para ver só a linha dele.
+3. Cada célula de mês mostra ✔ (entregue) ou ✘ (faltando). Funcionários com
+   pelo menos um mês entregue no ano ficam com a linha toda num verde bem
+   claro, para destacar de relance quem já tem algo registrado.
+4. Dê duplo clique numa célula ✔ para abrir o PDF daquele mês.
 
 > O programa é usado por várias pessoas no mesmo banco de dados
 > compartilhado no servidor do RH, por isso não existe (propositalmente)
