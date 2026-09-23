@@ -141,9 +141,45 @@ nomes das pastas como Setor/Funcionário/Ano e o nome do arquivo como Mês —
    claro, para destacar de relance quem já tem algo registrado.
 4. Dê duplo clique numa célula ✔ para abrir o PDF daquele mês.
 
+**Funcionários inativos "somem" só no ano corrente:** quando o Ano escolhido
+é o ano atual, quem está marcado como inativo (veja a janela "Gerenciar
+Funcionários" abaixo) não aparece na consulta do setor inteiro (nem em
+"Consultar por Mês"), pra não poluir a lista com quem já não trabalha mais
+ali. Anos anteriores sempre mostram todo mundo, ativo ou não — o histórico de
+quem já entregou frequência naquele ano não desaparece. Escolher um
+funcionário específico no combobox sempre funciona, mesmo que ele esteja
+inativo e seja o ano corrente.
+
+### Janela "Gerenciar Funcionários" (menu Arquivo → Gerenciar Funcionários...)
+
+Marca quem está ativo ou inativo — usado pra esconder quem já não trabalha
+mais das consultas do ano corrente, sem apagar nada do histórico.
+
+- **Buscar** (por nome) e **Status** (Todos/Ativos/Inativos) filtram a lista.
+  Acima da dica no rodapé, um resumo mostra quantos aparecem no filtro atual,
+  ex: `3 funcionários — 1 ativo, 2 inativos`.
+- **Alternar Ativo/Inativo**: selecione um funcionário na lista e clique no
+  botão (ou dê duplo clique na linha) para trocar o status.
+- **Importar CSV...**: lê uma **relação de quem está ativo hoje** — arquivo
+  `Nome;Setor` (uma linha por pessoa, com ou sem cabeçalho; a coluna Setor é
+  só informativa, a comparação é pelo nome). Quem está ativo no banco mas não
+  aparece nessa lista vira candidato a **inativar**; quem está inativo no
+  banco e aparece na lista vira candidato a **reativar**. Nada é aplicado na
+  hora — abre uma **tela de revisão** com os candidatos já pré-marcados
+  (desmarque o que não quiser aplicar) e só grava no banco depois de clicar
+  em **Confirmar**. Comparação tolerante a acento/maiúsculas. Essa tela nunca
+  cria funcionário ou setor novo — só ajusta o status de quem já foi
+  catalogado.
+- **Exportar CSV**: gera a mesma relação (`Nome;Setor`) só dos funcionários
+  **ativos** — serve de ponto de partida ou conferência para a próxima
+  importação.
+
+Como sempre: nenhum PDF, funcionário, setor ou frequência é apagado por essa
+tela — "inativo" é só uma marca reversível.
+
 > O programa é usado por várias pessoas no mesmo banco de dados
 > compartilhado no servidor do RH, por isso não existe (propositalmente)
-> nenhuma tela para excluir funcionário, setor ou frequência — um clique
+> nenhuma tela para **excluir** funcionário, setor ou frequência — um clique
 > errado apagaria cadastro de outra pessoa. Correções (nome digitado errado,
 > setor duplicado, etc.) exigem edição direta do arquivo `freqcontrol.db`
 > (por exemplo, com o [DB Browser for SQLite](https://sqlitebrowser.org/)).

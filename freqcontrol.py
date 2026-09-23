@@ -62,7 +62,28 @@ TEXTO_COMO_USAR = """Como usar o FreqControl
    pelo menos um mês naquele ano. Dê duplo clique num mês com ✔ para
    abrir o PDF correspondente.
 
-4. Trocar o banco de dados
+   No ano corrente, funcionários marcados como inativos não aparecem
+   na consulta do setor inteiro (só some da lista, nada é apagado).
+   Anos anteriores sempre mostram todo mundo, ativo ou não — o
+   histórico não desaparece. Escolher alguém específico no combobox
+   sempre funciona, mesmo inativo.
+
+4. Gerenciar Funcionários
+   Menu Arquivo > Gerenciar Funcionários...
+
+   Marca quem está ativo ou inativo. Use os campos Buscar/Status para
+   filtrar a lista — o resumo logo acima da dica mostra quantos
+   ativos/inativos aparecem no filtro atual. Dê duplo clique num
+   funcionário (ou selecione e use o botão) para alternar o status.
+
+   Importar CSV lê uma relação de quem está ativo hoje (Nome;Setor)
+   e mostra uma tela de revisão com quem entraria/sairia da lista de
+   ativos, já pré-marcado — só aplica depois de clicar Confirmar.
+   Exportar CSV gera essa mesma relação só com os ativos. Nada é
+   apagado — "inativo" é só uma marca reversível que afeta apenas as
+   duas telas de consulta, no ano corrente.
+
+5. Trocar o banco de dados
    Menu Arquivo > Alterar pasta do banco de dados..., caso precise
    apontar o programa para outro arquivo freqcontrol.db (por exemplo,
    ao trocar de servidor).
@@ -86,6 +107,13 @@ def normalizar_texto(texto):
 MESES_POR_NOME_NORMALIZADO = {
     normalizar_texto(nome_mes): numero for numero, nome_mes in enumerate(MESES, start=1)
 }
+
+
+def ano_atual():
+    """Ano corrente, calculado sempre em tempo de execução (nunca fixar um
+    ano literal no código) para o programa continuar funcionando sozinho
+    nos próximos anos."""
+    return datetime.now().year
 
 
 # ---------------------------------------------------------------------------
@@ -236,6 +264,19 @@ class Banco:
             """
         )
         self.conn.commit()
+        self._migrar_esquema()
+
+    def _migrar_esquema(self):
+        """Aplica alterações de esquema em bancos já existentes (criados por
+        versões anteriores do programa), sem apagar nada. Idempotente: pode
+        rodar em todo início de programa sem efeito colateral se já migrado.
+        """
+        colunas = {linha["name"] for linha in self.conn.execute("PRAGMA table_info(funcionarios)")}
+        if "ativo" not in colunas:
+            self.conn.execute(
+                "ALTER TABLE funcionarios ADD COLUMN ativo INTEGER NOT NULL DEFAULT 1"
+            )
+            self.conn.commit()
 
     # ---- Setores ----
     def listar_setores(self):
@@ -253,25 +294,29 @@ class Banco:
         return cur.lastrowid
 
     # ---- Funcionários ----
-    def listar_funcionarios(self, setor_id=None):
-        if setor_id is None:
-            cur = self.conn.execute(
-                """
-                SELECT f.id, f.nome, f.setor_id, s.nome AS setor_nome
-                FROM funcionarios f JOIN setores s ON f.setor_id = s.id
-                ORDER BY s.nome COLLATE NOCASE, f.nome COLLATE NOCASE
-                """
-            )
-        else:
-            cur = self.conn.execute(
-                """
-                SELECT f.id, f.nome, f.setor_id, s.nome AS setor_nome
-                FROM funcionarios f JOIN setores s ON f.setor_id = s.id
-                WHERE f.setor_id = ?
-                ORDER BY f.nome COLLATE NOCASE
-                """,
-                (setor_id,),
-            )
+    def listar_funcionarios(self, setor_id=None, somente_ativos=False):
+        """Lista funcionários (com o nome do setor). Por padrão traz ativos e
+        inativos — os comboboxes de seleção usam esse padrão de propósito,
+        para permitir escolher um ex-funcionário e consultar o histórico
+        dele. Passe somente_ativos=True só nas telas que precisam esconder
+        quem não trabalha mais (ex: listagem do ano corrente)."""
+        condicoes = []
+        parametros = []
+        if setor_id is not None:
+            condicoes.append("f.setor_id = ?")
+            parametros.append(setor_id)
+        if somente_ativos:
+            condicoes.append("f.ativo = 1")
+        clausula_where = f"WHERE {' AND '.join(condicoes)}" if condicoes else ""
+        cur = self.conn.execute(
+            f"""
+            SELECT f.id, f.nome, f.setor_id, f.ativo, s.nome AS setor_nome
+            FROM funcionarios f JOIN setores s ON f.setor_id = s.id
+            {clausula_where}
+            ORDER BY s.nome COLLATE NOCASE, f.nome COLLATE NOCASE
+            """,
+            parametros,
+        )
         return cur.fetchall()
 
     def obter_ou_criar_funcionario(self, nome, setor_id):
@@ -288,6 +333,20 @@ class Banco:
         )
         self.conn.commit()
         return cur.lastrowid
+
+    def definir_ativo_funcionario(self, funcionario_id, ativo):
+        self.conn.execute(
+            "UPDATE funcionarios SET ativo = ? WHERE id = ?", (1 if ativo else 0, funcionario_id)
+        )
+        self.conn.commit()
+
+    def alternar_ativo_funcionario(self, funcionario_id):
+        """Inverte o status ativo/inativo do funcionário e retorna o novo valor (1 ou 0)."""
+        cur = self.conn.execute("SELECT ativo FROM funcionarios WHERE id = ?", (funcionario_id,))
+        linha = cur.fetchone()
+        novo_valor = 0 if linha["ativo"] else 1
+        self.definir_ativo_funcionario(funcionario_id, novo_valor)
+        return novo_valor
 
     # ---- Frequências ----
     def obter_frequencia(self, funcionario_id, mes, ano):
@@ -318,13 +377,19 @@ class Banco:
         return {linha["caminho_arquivo"] for linha in cur.fetchall()}
 
     def status_mes(self, mes, ano):
+        # O filtro de ativo só vale para o ano corrente: anos anteriores
+        # continuam mostrando todo mundo (ativo ou não), já que a pessoa
+        # pode ter trabalhado legitimamente naquele ano — o histórico não
+        # deve sumir por causa de um desligamento posterior.
+        filtro_ativo = "WHERE f.ativo = 1" if ano == ano_atual() else ""
         cur = self.conn.execute(
-            """
+            f"""
             SELECT s.nome AS setor_nome, f.id AS funcionario_id, f.nome AS funcionario_nome,
                    fr.caminho_arquivo AS caminho
             FROM funcionarios f
             JOIN setores s ON f.setor_id = s.id
             LEFT JOIN frequencias fr ON fr.funcionario_id = f.id AND fr.mes = ? AND fr.ano = ?
+            {filtro_ativo}
             ORDER BY s.nome COLLATE NOCASE, f.nome COLLATE NOCASE
             """,
             (mes, ano),
@@ -338,8 +403,15 @@ class Banco:
         funcionários do setor (ordenados por nome); caso contrário, só as
         do funcionário informado. Cada linha é um dict com funcionario_id,
         funcionario_nome, mes (1-12) e caminho (None se faltando).
+
+        Quando nenhum funcionário específico é pedido e o ano é o ano
+        corrente, funcionários inativos ficam de fora da listagem do setor
+        inteiro. Anos anteriores sempre incluem inativos (histórico), e um
+        funcionário escolhido explicitamente no combobox sempre aparece,
+        mesmo inativo — o filtro é só para a visão "setor inteiro".
         """
-        funcionarios = self.listar_funcionarios(setor_id)
+        somente_ativos = funcionario_id is None and ano == ano_atual()
+        funcionarios = self.listar_funcionarios(setor_id, somente_ativos=somente_ativos)
         if funcionario_id is not None:
             funcionarios = [f for f in funcionarios if f["id"] == funcionario_id]
         if not funcionarios:
@@ -474,7 +546,7 @@ class AbaCatalogar(ttk.Frame):
 
         ttk.Label(frame_direita, text="Ano:").pack(anchor=tk.W)
         self.entrada_ano = ttk.Entry(frame_direita)
-        self.entrada_ano.insert(0, str(datetime.now().year))
+        self.entrada_ano.insert(0, str(ano_atual()))
         self.entrada_ano.pack(fill=tk.X, pady=(0, 12))
 
         self.botao_salvar = ttk.Button(frame_direita, text="Salvar", command=self._salvar, state=tk.DISABLED)
@@ -729,7 +801,7 @@ class AbaConsultaMes(ttk.Frame):
 
         ttk.Label(topo, text="Ano:").pack(side=tk.LEFT)
         self.entrada_ano = ttk.Entry(topo, width=8)
-        self.entrada_ano.insert(0, str(datetime.now().year))
+        self.entrada_ano.insert(0, str(ano_atual()))
         self.entrada_ano.pack(side=tk.LEFT, padx=(4, 12))
 
         ttk.Button(topo, text="Consultar", command=self._consultar).pack(side=tk.LEFT, padx=(0, 12))
@@ -865,7 +937,7 @@ class AbaConsultaFuncionario(ttk.Frame):
 
         ttk.Label(topo, text="Ano:").pack(side=tk.LEFT)
         self.entrada_ano = ttk.Entry(topo, width=8)
-        self.entrada_ano.insert(0, str(datetime.now().year))
+        self.entrada_ano.insert(0, str(ano_atual()))
         self.entrada_ano.pack(side=tk.LEFT, padx=(4, 12))
 
         ttk.Button(topo, text="Consultar", command=self._consultar).pack(side=tk.LEFT)
@@ -984,6 +1056,324 @@ class AbaConsultaFuncionario(ttk.Frame):
 
 
 # ---------------------------------------------------------------------------
+# Janela: Gerenciar Funcionários (ativo/inativo)
+# ---------------------------------------------------------------------------
+
+class AbaGerenciarFuncionarios(ttk.Frame):
+    def __init__(self, master, banco, app):
+        super().__init__(master)
+        self.banco = banco
+        self.app = app
+        self._construir_interface()
+        self.atualizar()
+
+    def _construir_interface(self):
+        topo = ttk.Frame(self)
+        topo.pack(fill=tk.X, padx=8, pady=8)
+
+        ttk.Label(topo, text="Buscar:").pack(side=tk.LEFT)
+        self.entrada_busca = ttk.Entry(topo, width=24)
+        self.entrada_busca.pack(side=tk.LEFT, padx=(4, 12))
+        self.entrada_busca.bind("<KeyRelease>", lambda evento: self.atualizar())
+
+        ttk.Label(topo, text="Status:").pack(side=tk.LEFT)
+        self.combo_status = ttk.Combobox(
+            topo, state="readonly", width=10, values=("Todos", "Ativos", "Inativos")
+        )
+        self.combo_status.current(0)
+        self.combo_status.pack(side=tk.LEFT, padx=(4, 0))
+        self.combo_status.bind("<<ComboboxSelected>>", lambda evento: self.atualizar())
+
+        container_tabela = ttk.Frame(self)
+        container_tabela.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+
+        self.tree = ttk.Treeview(
+            container_tabela, columns=("funcionario", "setor", "status"), show="headings",
+            selectmode="browse",
+        )
+        self.tree.heading("funcionario", text="Funcionário")
+        self.tree.heading("setor", text="Setor")
+        self.tree.heading("status", text="Status")
+        self.tree.column("funcionario", width=280, anchor=tk.W, stretch=True)
+        self.tree.column("setor", width=160, anchor=tk.W, stretch=False)
+        self.tree.column("status", width=90, anchor=tk.CENTER, stretch=False)
+        self.tree.tag_configure("inativo", foreground="#999999")
+        self.tree.bind("<Double-1>", lambda evento: self._alternar_status())
+
+        barra_vertical = ttk.Scrollbar(container_tabela, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=barra_vertical.set)
+        barra_vertical.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        botoes = ttk.Frame(self)
+        botoes.pack(fill=tk.X, padx=8, pady=(0, 4))
+        ttk.Button(botoes, text="Alternar Ativo/Inativo", command=self._alternar_status).pack(side=tk.LEFT)
+        ttk.Button(botoes, text="Importar CSV...", command=self._importar_csv).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(botoes, text="Exportar CSV...", command=self._exportar_csv).pack(side=tk.LEFT, padx=(8, 0))
+
+        self.label_resumo = ttk.Label(self, text="")
+        self.label_resumo.pack(anchor=tk.W, padx=8, pady=(0, 2))
+
+        ttk.Label(
+            self,
+            text="Dica: dê duplo clique num funcionário (ou selecione e use o botão) para "
+                 "alternar entre ativo e inativo. Funcionários inativos continuam com todo o "
+                 "histórico preservado — só ficam de fora da listagem do setor inteiro no ano "
+                 "corrente.",
+            wraplength=650, justify=tk.LEFT,
+        ).pack(anchor=tk.W, padx=8, pady=(0, 8))
+
+    def atualizar(self):
+        selecionado = self.tree.selection()
+        self.tree.delete(*self.tree.get_children())
+
+        texto_busca = normalizar_texto(self.entrada_busca.get())
+        filtro_status = self.combo_status.get() or "Todos"
+
+        ativos = 0
+        inativos = 0
+        for funcionario in self.banco.listar_funcionarios():
+            if texto_busca and texto_busca not in normalizar_texto(funcionario["nome"]):
+                continue
+            esta_ativo = bool(funcionario["ativo"])
+            if filtro_status == "Ativos" and not esta_ativo:
+                continue
+            if filtro_status == "Inativos" and esta_ativo:
+                continue
+
+            if esta_ativo:
+                ativos += 1
+            else:
+                inativos += 1
+
+            status = "Ativo" if esta_ativo else "Inativo"
+            tags = () if esta_ativo else ("inativo",)
+            self.tree.insert(
+                "", tk.END, iid=str(funcionario["id"]),
+                values=(funcionario["nome"], funcionario["setor_nome"], status),
+                tags=tags,
+            )
+
+        total = ativos + inativos
+        self.label_resumo.config(
+            text=(
+                f"{total} funcionário{'' if total == 1 else 's'} — "
+                f"{ativos} ativo{'' if ativos == 1 else 's'}, "
+                f"{inativos} inativo{'' if inativos == 1 else 's'}"
+            )
+        )
+
+        if selecionado and self.tree.exists(selecionado[0]):
+            self.tree.selection_set(selecionado[0])
+
+    def _alternar_status(self):
+        selecao = self.tree.selection()
+        if not selecao:
+            messagebox.showwarning(APP_NOME, "Selecione um funcionário na lista.", parent=self)
+            return
+        funcionario_id = int(selecao[0])
+        self.banco.alternar_ativo_funcionario(funcionario_id)
+        self.atualizar()
+
+    def _importar_csv(self):
+        """Importa uma relação de funcionários atualmente ativos (Nome;Setor,
+        uma linha por pessoa). Quem está ativo no banco mas não aparece nessa
+        lista vira candidato a inativar; quem está inativo no banco e aparece
+        na lista vira candidato a reativar. Nada é aplicado sem revisão."""
+        caminho = filedialog.askopenfilename(
+            title="Importar relação de funcionários ativos (Nome;Setor)",
+            filetypes=[("Arquivo CSV", "*.csv")],
+        )
+        if not caminho:
+            return
+        try:
+            with open(caminho, "r", newline="", encoding="utf-8-sig") as arquivo:
+                linhas = list(csv.reader(arquivo, delimiter=";"))
+        except (OSError, UnicodeDecodeError) as erro:
+            messagebox.showerror(APP_NOME, f"Não foi possível ler o CSV:\n{erro}", parent=self)
+            return
+
+        if linhas and [c.strip().lower() for c in linhas[0][:2]] == ["nome", "setor"]:
+            linhas = linhas[1:]  # pula o cabeçalho, se houver
+
+        nomes_csv = set()
+        for linha in linhas:
+            if not linha or not linha[0].strip():
+                continue
+            nomes_csv.add(normalizar_texto(linha[0]))
+
+        if not nomes_csv:
+            messagebox.showwarning(
+                APP_NOME,
+                "Não foi possível ler nenhum nome válido desse CSV. Confira se o "
+                "arquivo usa ';' como separador e a primeira coluna é o nome do "
+                "funcionário (Nome;Setor).",
+                parent=self,
+            )
+            return
+
+        candidatos_inativar = []
+        candidatos_reativar = []
+        for funcionario in self.banco.listar_funcionarios():
+            esta_na_lista = normalizar_texto(funcionario["nome"]) in nomes_csv
+            if funcionario["ativo"] and not esta_na_lista:
+                candidatos_inativar.append(funcionario)
+            elif not funcionario["ativo"] and esta_na_lista:
+                candidatos_reativar.append(funcionario)
+
+        if not candidatos_inativar and not candidatos_reativar:
+            messagebox.showinfo(
+                APP_NOME,
+                f"CSV lido: {len(nomes_csv)} nome(s). Nenhuma mudança de status "
+                "necessária — todo mundo já está com o status certo.",
+                parent=self,
+            )
+            return
+
+        self._abrir_revisao_importacao(len(nomes_csv), candidatos_inativar, candidatos_reativar)
+
+    def _abrir_revisao_importacao(self, total_csv, candidatos_inativar, candidatos_reativar):
+        janela = tk.Toplevel(self)
+        janela.title(f"{APP_NOME} — Revisar importação")
+        janela.geometry("650x520")
+        janela.minsize(500, 380)
+        janela.transient(self.winfo_toplevel())
+        janela.grab_set()
+
+        ttk.Label(
+            janela,
+            text=(
+                f"CSV lido: {total_csv} nome(s).   "
+                f"Candidatos a inativar: {len(candidatos_inativar)}.   "
+                f"Candidatos a reativar: {len(candidatos_reativar)}."
+            ),
+            wraplength=620, justify=tk.LEFT,
+        ).pack(anchor=tk.W, padx=8, pady=8)
+
+        ttk.Label(
+            janela,
+            text="Tudo abaixo já vem pré-selecionado. Desmarque o que não quiser aplicar "
+                 "(clique na primeira coluna) e confira antes de confirmar.",
+            wraplength=620, justify=tk.LEFT,
+        ).pack(anchor=tk.W, padx=8, pady=(0, 8))
+
+        container = ttk.Frame(janela)
+        container.pack(fill=tk.BOTH, expand=True, padx=8)
+
+        tree = ttk.Treeview(
+            container, columns=("marcado", "acao", "funcionario", "setor"),
+            show="headings", selectmode="none",
+        )
+        tree.heading("marcado", text="")
+        tree.heading("acao", text="Ação")
+        tree.heading("funcionario", text="Funcionário")
+        tree.heading("setor", text="Setor")
+        tree.column("marcado", width=30, anchor=tk.CENTER, stretch=False)
+        tree.column("acao", width=90, anchor=tk.CENTER, stretch=False)
+        tree.column("funcionario", width=280, anchor=tk.W, stretch=True)
+        tree.column("setor", width=150, anchor=tk.W, stretch=False)
+
+        barra_vertical = ttk.Scrollbar(container, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=barra_vertical.set)
+        barra_vertical.pack(side=tk.RIGHT, fill=tk.Y)
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        dados_linha = {}  # iid -> (funcionario_id, novo_valor_ativo)
+        marcados = set()
+        for funcionario in candidatos_inativar:
+            iid = f"inativar-{funcionario['id']}"
+            dados_linha[iid] = (funcionario["id"], False)
+            marcados.add(iid)
+            tree.insert(
+                "", tk.END, iid=iid,
+                values=("☑", "Inativar", funcionario["nome"], funcionario["setor_nome"]),
+            )
+        for funcionario in candidatos_reativar:
+            iid = f"reativar-{funcionario['id']}"
+            dados_linha[iid] = (funcionario["id"], True)
+            marcados.add(iid)
+            tree.insert(
+                "", tk.END, iid=iid,
+                values=("☑", "Reativar", funcionario["nome"], funcionario["setor_nome"]),
+            )
+
+        def alternar_linha(iid):
+            if iid in marcados:
+                marcados.discard(iid)
+                tree.set(iid, "marcado", "☐")
+            else:
+                marcados.add(iid)
+                tree.set(iid, "marcado", "☑")
+
+        def ao_clicar_na_tabela(evento):
+            linha_id = tree.identify_row(evento.y)
+            coluna_id = tree.identify_column(evento.x)
+            if linha_id and coluna_id == "#1":
+                alternar_linha(linha_id)
+
+        tree.bind("<Button-1>", ao_clicar_na_tabela)
+
+        def marcar_todos():
+            marcados.clear()
+            marcados.update(dados_linha.keys())
+            for iid in dados_linha:
+                tree.set(iid, "marcado", "☑")
+
+        def desmarcar_todos():
+            marcados.clear()
+            for iid in dados_linha:
+                tree.set(iid, "marcado", "☐")
+
+        botoes_selecao = ttk.Frame(janela)
+        botoes_selecao.pack(fill=tk.X, padx=8, pady=(6, 0))
+        ttk.Button(botoes_selecao, text="Selecionar Todos", command=marcar_todos).pack(side=tk.LEFT)
+        ttk.Button(botoes_selecao, text="Desmarcar Todos", command=desmarcar_todos).pack(
+            side=tk.LEFT, padx=(8, 0)
+        )
+
+        def cancelar():
+            janela.destroy()
+
+        def confirmar():
+            aplicados = 0
+            for iid in marcados:
+                funcionario_id, novo_ativo = dados_linha[iid]
+                self.banco.definir_ativo_funcionario(funcionario_id, novo_ativo)
+                aplicados += 1
+            janela.destroy()
+            self.atualizar()
+            messagebox.showinfo(APP_NOME, f"{aplicados} funcionário(s) atualizado(s).", parent=self)
+
+        botoes_acao = ttk.Frame(janela)
+        botoes_acao.pack(fill=tk.X, padx=8, pady=8)
+        ttk.Button(botoes_acao, text="Confirmar", command=confirmar).pack(side=tk.RIGHT)
+        ttk.Button(botoes_acao, text="Cancelar", command=cancelar).pack(side=tk.RIGHT, padx=(0, 8))
+
+        janela.protocol("WM_DELETE_WINDOW", cancelar)
+
+    def _exportar_csv(self):
+        """Exporta a relação dos funcionários ATIVOS (Nome;Setor) — no formato
+        esperado pelo Importar CSV, útil como ponto de partida ou conferência."""
+        caminho = filedialog.asksaveasfilename(
+            title="Exportar relação de funcionários ativos",
+            defaultextension=".csv",
+            filetypes=[("Arquivo CSV", "*.csv")],
+            initialfile="funcionarios_ativos.csv",
+        )
+        if not caminho:
+            return
+        try:
+            with open(caminho, "w", newline="", encoding="utf-8-sig") as arquivo:
+                escritor = csv.writer(arquivo, delimiter=";")
+                escritor.writerow(["Nome", "Setor"])
+                for funcionario in self.banco.listar_funcionarios(somente_ativos=True):
+                    escritor.writerow([funcionario["nome"], funcionario["setor_nome"]])
+            messagebox.showinfo(APP_NOME, "CSV exportado com sucesso.", parent=self)
+        except OSError as erro:
+            messagebox.showerror(APP_NOME, f"Não foi possível exportar o CSV:\n{erro}", parent=self)
+
+
+# ---------------------------------------------------------------------------
 # Aplicativo principal
 # ---------------------------------------------------------------------------
 
@@ -1005,6 +1395,8 @@ class AplicativoFreqControl:
 
         self.aba_catalogar = None
         self._janela_catalogar = None
+        self.aba_gerenciar = None
+        self._janela_gerenciar = None
         self._janela_ajuda = None
 
         self._construir_menu()
@@ -1029,6 +1421,7 @@ class AplicativoFreqControl:
         barra_menu = tk.Menu(self.root)
         menu_arquivo = tk.Menu(barra_menu, tearoff=0)
         menu_arquivo.add_command(label="Catalogar PDFs...", command=self._abrir_catalogar)
+        menu_arquivo.add_command(label="Gerenciar Funcionários...", command=self._abrir_gerenciar)
         menu_arquivo.add_command(
             label="Alterar pasta do banco de dados...", command=self._alterar_pasta_banco
         )
@@ -1070,6 +1463,36 @@ class AplicativoFreqControl:
 
         # Novos registros podem ter sido cadastrados enquanto a janela estava
         # aberta — atualiza o que já está sendo exibido nas abas de consulta.
+        self.aba_consulta_mes._consultar()
+        if self.aba_consulta_funcionario.combo_setor.get().strip():
+            self.aba_consulta_funcionario._consultar()
+
+    def _abrir_gerenciar(self):
+        if self._janela_gerenciar is not None and self._janela_gerenciar.winfo_exists():
+            self._janela_gerenciar.deiconify()
+            self._janela_gerenciar.lift()
+            self._janela_gerenciar.focus_force()
+            return
+
+        janela = tk.Toplevel(self.root)
+        janela.title(f"{APP_NOME} — Gerenciar Funcionários")
+        janela.geometry("700x550")
+        janela.minsize(500, 400)
+
+        self.aba_gerenciar = AbaGerenciarFuncionarios(janela, self.banco, self)
+        self.aba_gerenciar.pack(fill=tk.BOTH, expand=True)
+
+        janela.protocol("WM_DELETE_WINDOW", self._ao_fechar_gerenciar)
+        self._janela_gerenciar = janela
+
+    def _ao_fechar_gerenciar(self):
+        if self._janela_gerenciar is not None:
+            self._janela_gerenciar.destroy()
+        self._janela_gerenciar = None
+        self.aba_gerenciar = None
+
+        # Mudar quem está ativo/inativo pode afetar o que aparece nas
+        # consultas do ano corrente — atualiza o que já está sendo exibido.
         self.aba_consulta_mes._consultar()
         if self.aba_consulta_funcionario.combo_setor.get().strip():
             self.aba_consulta_funcionario._consultar()
@@ -1136,6 +1559,8 @@ class AplicativoFreqControl:
             aba.banco = novo_banco
         if self.aba_catalogar is not None:
             self.aba_catalogar.banco = novo_banco
+        if self.aba_gerenciar is not None:
+            self.aba_gerenciar.banco = novo_banco
 
         config = carregar_config()
         config["db_path"] = caminho_db
@@ -1150,6 +1575,8 @@ class AplicativoFreqControl:
                 aba.atualizar_setores()
         if self.aba_catalogar is not None:
             self.aba_catalogar.atualizar_setores()
+        if self.aba_gerenciar is not None:
+            self.aba_gerenciar.atualizar()
 
 
 def main():
