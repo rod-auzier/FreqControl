@@ -22,7 +22,7 @@ grava o *caminho* de cada arquivo em um banco de dados (SQLite) compartilhado.
 - Windows (usa a API `WNetGetUniversalName` do Windows para resolver caminhos de rede)
 - Python 3.9+ apenas para rodar a partir do código-fonte ou gerar o `.exe` — quem só for **usar** o `.exe` já empacotado não precisa de Python instalado
 - Biblioteca padrão (`tkinter`, `sqlite3`, `ctypes`, `csv`, `json`, `os`, `sys`,
-  `zipfile`, `xml.etree`, `calendar`) para tudo, **exceto** a aba "Produzir
+  `zipfile`, `xml.etree`, `calendar`) para tudo, **exceto** a aba "Gerar
   Frequência": gerar o PDF da frequência precisa de `reportlab` (e, por
   consequência, `Pillow`) — a única dependência externa do projeto.
 
@@ -160,7 +160,7 @@ quem já entregou frequência naquele ano não desaparece. Escolher um
 funcionário específico no combobox sempre funciona, mesmo que ele esteja
 inativo e seja o ano corrente.
 
-### Aba "Produzir Frequência"
+### Aba "Gerar Frequência"
 
 Gera o PDF da folha de frequência em branco (pronta pra imprimir e
 distribuir) de todos os funcionários de um setor, a partir de uma **planilha
@@ -170,7 +170,12 @@ dados no banco do FreqControl.
 
 1. Na primeira vez, clique em **Recarregar Planilha** e selecione o arquivo
    `.ods` (o caminho fica salvo; para trocar depois, use
-   **Arquivo → Configurar planilha de frequências (.ods)...**).
+   **Arquivo → Configurar planilha de frequências (.ods)...**). Da próxima
+   vez que o programa abrir, a planilha já carrega sozinha — **Recarregar
+   Planilha** só é necessário se o arquivo for atualizado enquanto o
+   programa já está aberto. Se o carregamento automático falhar (rede fora
+   do ar, por exemplo), aparece um aviso no lugar do "planilha carregada",
+   com o botão disponível pra tentar de novo.
 2. Escolha **Mês**, **Ano** e o **Setor (lotação)** — a lista de setores vem
    direto da coluna `LOTAÇÃO` da planilha (não dos setores cadastrados no
    FreqControl), então aparece exatamente como está escrito lá, inclusive

@@ -94,7 +94,7 @@ TEXTO_COMO_USAR = """Como usar o FreqControl
    apagado — "inativo" é só uma marca reversível que afeta apenas as
    duas telas de consulta, no ano corrente.
 
-5. Produzir Frequência
+5. Gerar Frequência
    Gera o PDF da folha de frequência em branco de um setor inteiro, a
    partir da planilha externa do RH (.ods) — o programa só lê essa
    planilha a cada geração, nunca importa/duplica esses dados no
@@ -1684,6 +1684,7 @@ class AbaProduzirFrequencia(ttk.Frame):
         self.app = app
         self._funcionarios_planilha = []
         self._construir_interface()
+        self._carregar_automaticamente()
 
     def _construir_interface(self):
         topo = ttk.Frame(self)
@@ -1742,6 +1743,42 @@ class AbaProduzirFrequencia(ttk.Frame):
         config["planilha_frequencias_path"] = novo_caminho_resolvido
         salvar_config(config)
         return novo_caminho_resolvido
+
+    def _carregar_automaticamente(self):
+        """Carrega a planilha já configurada (se houver) assim que a aba é
+        criada, sem precisar de clique manual. Se falhar (arquivo sumiu,
+        pasta de rede fora do ar no momento em que o programa abriu, etc.),
+        mostra o erro no próprio label de status em vez de interromper a
+        abertura do programa com uma caixa de diálogo — o botão "Recarregar
+        Planilha" continua disponível pra tentar de novo na hora."""
+        config = carregar_config()
+        caminho = config.get("planilha_frequencias_path")
+        if not caminho:
+            return  # nunca configurada ainda; aguarda ação manual do usuário
+
+        if not os.path.isfile(caminho):
+            self.label_status.config(
+                text=f"Não foi possível carregar a planilha automaticamente: arquivo não "
+                     f"encontrado em\n{caminho}\n\nUse \"Recarregar Planilha\" para tentar de novo."
+            )
+            return
+
+        try:
+            self._funcionarios_planilha = ler_funcionarios_planilha(caminho)
+        except (OSError, zipfile.BadZipFile, ET.ParseError, KeyError) as erro:
+            self._funcionarios_planilha = []
+            self.label_status.config(
+                text=f"Não foi possível carregar a planilha automaticamente:\n{caminho}\n\n{erro}"
+                     "\n\nUse \"Recarregar Planilha\" para tentar de novo."
+            )
+            return
+
+        lotacoes = sorted({f["lotacao"] for f in self._funcionarios_planilha}, key=normalizar_texto)
+        self.combo_setor["values"] = lotacoes
+        self.label_status.config(
+            text=f"Planilha carregada: {len(self._funcionarios_planilha)} funcionário(s) em "
+                 f"{len(lotacoes)} lotação(ões). Arquivo: {caminho}"
+        )
 
     def configurar_planilha(self):
         """Chamado pelo menu Arquivo para trocar a planilha configurada."""
@@ -1877,7 +1914,7 @@ class AplicativoFreqControl:
 
         notebook.add(self.aba_consulta_mes, text="Consultar por Mês")
         notebook.add(self.aba_consulta_funcionario, text="Consulta Detalhada")
-        notebook.add(self.aba_produzir_frequencia, text="Produzir Frequência")
+        notebook.add(self.aba_produzir_frequencia, text="Gerar Frequência")
 
         self.abas = (
             self.aba_consulta_mes,
