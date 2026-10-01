@@ -8,16 +8,27 @@ organizados manualmente pelo usuário na estrutura:
 Ele nunca move, copia, renomeia ou apaga nenhum arquivo PDF.
 """
 
+import calendar
 import csv
 import ctypes
 import json
 import os
+import re
 import sqlite3
 import sys
 import tkinter as tk
 import unicodedata
-from datetime import datetime
+import zipfile
+import xml.etree.ElementTree as ET
+from datetime import date, datetime
 from tkinter import filedialog, messagebox, ttk
+
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_LEFT
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.units import cm
+from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 APP_NOME = "FreqControl"
 NOME_BANCO = "freqcontrol.db"
@@ -83,7 +94,20 @@ TEXTO_COMO_USAR = """Como usar o FreqControl
    apagado — "inativo" é só uma marca reversível que afeta apenas as
    duas telas de consulta, no ano corrente.
 
-5. Trocar o banco de dados
+5. Produzir Frequência
+   Gera o PDF da folha de frequência em branco de um setor inteiro, a
+   partir da planilha externa do RH (.ods) — o programa só lê essa
+   planilha a cada geração, nunca importa/duplica esses dados no
+   banco do FreqControl.
+
+   Escolha Mês, Ano e Setor (a lista de setores vem da coluna
+   LOTAÇÃO da própria planilha, exatamente como está escrita lá) e
+   clique em Gerar PDF. Sai um bloco por funcionário, com todos os
+   dias do mês e os sábados/domingos já calculados certinho pelo
+   calendário real. Se alguma matrícula parecer corrompida pela
+   planilha, o programa avisa antes de gerar.
+
+6. Trocar o banco de dados
    Menu Arquivo > Alterar pasta do banco de dados..., caso precise
    apontar o programa para outro arquivo freqcontrol.db (por exemplo,
    ao trocar de servidor).
@@ -163,6 +187,283 @@ def resolver_caminho_unc(caminho):
         return caminho
     except Exception:
         return caminho
+
+
+# ---------------------------------------------------------------------------
+# Leitura da planilha externa de dados (RH) e geração do PDF de frequência
+# ---------------------------------------------------------------------------
+
+NS_ODF_TABLE = "urn:oasis:names:tc:opendocument:xmlns:table:1.0"
+NS_ODF_TEXT = "urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+
+ABAS_PLANILHA_IGNORADAS = {"geral"}  # comparado ja normalizado (sem acento/caixa)
+
+SINONIMOS_COLUNA_PLANILHA = {
+    "matricula": "matricula",
+    "nome": "nome",
+    "nomes": "nome",
+    "cargo": "cargo",
+    "lotacao": "lotacao",
+}
+
+PADRAO_MATRICULA_SUSPEITA = re.compile(r"^\d+\.\d+$")
+
+CAMINHO_BRASAO_PARA = os.path.join(
+    getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__))), "assets", "brasao_para.png"
+)
+
+
+def _tag_odf(ns, nome):
+    return f"{{{ns}}}{nome}"
+
+
+def _texto_celula_odf(celula):
+    partes = [
+        "".join(paragrafo.itertext())
+        for paragrafo in celula.iter(_tag_odf(NS_ODF_TEXT, "p"))
+    ]
+    return "\n".join(partes).strip()
+
+
+def _linhas_da_tabela_odf(tabela):
+    """Expande number-rows-repeated/number-columns-repeated da tabela ODF,
+    cortando o bloco final de linhas em branco repetidas até o fim da
+    planilha (o ODF costuma preencher a folha inteira, inclusive linhas sem
+    nenhum dado, repetindo a última linha dezenas de milhares de vezes)."""
+    linhas = []
+    for linha_xml in tabela.findall(_tag_odf(NS_ODF_TABLE, "table-row")):
+        repete_linha = int(linha_xml.attrib.get(_tag_odf(NS_ODF_TABLE, "number-rows-repeated"), "1"))
+        if repete_linha > 1000:
+            break
+        celulas_xml = linha_xml.findall(_tag_odf(NS_ODF_TABLE, "table-cell"))
+        valores = []
+        for celula in celulas_xml:
+            repete_coluna = int(celula.attrib.get(_tag_odf(NS_ODF_TABLE, "number-columns-repeated"), "1"))
+            valores.extend([_texto_celula_odf(celula)] * repete_coluna)
+        for _ in range(repete_linha):
+            linhas.append(valores)
+    return linhas
+
+
+def ler_funcionarios_planilha(caminho_ods):
+    """Lê a planilha externa (.ods) de dados de RH e retorna uma lista de
+    dicts {nome, matricula, cargo, lotacao, matricula_suspeita, aba}.
+
+    Nunca duplica/importa esses dados no banco do FreqControl — lê direto da
+    planilha a cada chamada (a fonte de verdade continua sendo o .ods, não o
+    FreqControl). Ignora a aba GERAL (colunas diferentes, não confiável).
+    Abas sem coluna LOTAÇÃO própria (ex: "CEDIDOS") não são ignoradas — usam
+    o nome da própria aba como lotação fixa para todas as suas linhas. Pula
+    linhas sem Nome ou sem Lotação. Nomes de coluna variam entre abas
+    (NOME/NOMES, etc.) e são tratados como sinônimos, comparando sem
+    acento/caixa via normalizar_texto().
+    """
+    with zipfile.ZipFile(caminho_ods) as arquivo_zip:
+        conteudo = arquivo_zip.read("content.xml")
+    raiz = ET.fromstring(conteudo)
+    tabelas = raiz.findall(f".//{_tag_odf(NS_ODF_TABLE, 'table')}")
+
+    funcionarios = []
+    for tabela in tabelas:
+        nome_aba = tabela.attrib.get(_tag_odf(NS_ODF_TABLE, "name"), "")
+        if normalizar_texto(nome_aba) in ABAS_PLANILHA_IGNORADAS:
+            continue
+        linhas = _linhas_da_tabela_odf(tabela)
+        if not linhas:
+            continue
+
+        indices = {}
+        for indice, nome_coluna in enumerate(linhas[0]):
+            chave = SINONIMOS_COLUNA_PLANILHA.get(normalizar_texto(nome_coluna))
+            if chave and chave not in indices:
+                indices[chave] = indice
+
+        if "nome" not in indices:
+            continue  # aba sem nem a coluna de nome -> não dá pra aproveitar
+
+        lotacao_fixa = None
+        if "lotacao" not in indices:
+            # Aba sem coluna LOTAÇÃO própria (ex: "CEDIDOS") -> usa o nome da
+            # própria aba como lotação fixa, em vez de ignorar a aba inteira.
+            lotacao_fixa = nome_aba.strip()
+
+        def valor_da_linha(linha, chave, indices=indices):
+            indice = indices.get(chave)
+            if indice is None or indice >= len(linha):
+                return ""
+            return linha[indice].strip()
+
+        for linha in linhas[1:]:
+            nome = valor_da_linha(linha, "nome")
+            lotacao = lotacao_fixa if lotacao_fixa is not None else valor_da_linha(linha, "lotacao")
+            if not nome or not lotacao:
+                continue  # linha vazia, ou sem nome/lotação -> não dá pra gerar frequência
+            matricula = valor_da_linha(linha, "matricula")
+            cargo = valor_da_linha(linha, "cargo")
+            funcionarios.append(
+                {
+                    "nome": nome,
+                    "matricula": matricula,
+                    "cargo": cargo,
+                    "lotacao": lotacao,
+                    "matricula_suspeita": bool(PADRAO_MATRICULA_SUSPEITA.match(matricula)),
+                    "aba": nome_aba,
+                }
+            )
+
+    funcionarios.sort(key=lambda f: normalizar_texto(f["nome"]))
+    return funcionarios
+
+
+def gerar_dias_mes(ano, mes):
+    """Retorna uma lista de (dia, rotulo_especial) cobrindo o mês inteiro,
+    com rotulo_especial = "SÁBADO"/"DOMINGO" nos finais de semana. O dia da
+    semana é calculado de verdade pelo calendário (nunca copiado de um
+    padrão fixo), então funciona igual pra qualquer mês/ano, incluindo
+    fevereiro bissexto ou não."""
+    _, ultimo_dia = calendar.monthrange(ano, mes)
+    dias = []
+    for dia in range(1, ultimo_dia + 1):
+        dia_da_semana = date(ano, mes, dia).weekday()  # 5 = sábado, 6 = domingo
+        if dia_da_semana == 5:
+            rotulo = "SÁBADO"
+        elif dia_da_semana == 6:
+            rotulo = "DOMINGO"
+        else:
+            rotulo = None
+        dias.append((dia, rotulo))
+    return dias
+
+
+def _escapar_texto_pdf(texto):
+    return (texto or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+COR_FUNDO_FIM_DE_SEMANA = colors.HexColor("#BFBFBF")
+
+LINHAS_RODAPE_FREQUENCIA = (
+    "Av. Gentil Bittencourt, número 43,",
+    "Batista Campos, Belém – PA. CEP: 66015-140",
+    "Telefone: 3110-5036",
+    "SE-mail: solange.soekha@setur.pa.gov.br",
+)
+
+
+def _desenhar_cabecalho_frequencia(canvas_pdf, _documento):
+    canvas_pdf.saveState()
+    largura_pagina, altura_pagina = A4
+
+    largura_brasao = 1.8 * cm
+    altura_brasao = 1.97 * cm
+    try:
+        canvas_pdf.drawImage(
+            CAMINHO_BRASAO_PARA,
+            (largura_pagina - largura_brasao) / 2, altura_pagina - 0.5 * cm - altura_brasao,
+            width=largura_brasao, height=altura_brasao,
+            preserveAspectRatio=True, mask="auto",
+        )
+    except Exception:
+        pass  # sem o brasão o documento ainda é gerado, só sem a imagem
+
+    canvas_pdf.setFont("Helvetica-Bold", 13)
+    canvas_pdf.drawCentredString(largura_pagina / 2, altura_pagina - 2.75 * cm, "GOVERNO DO ESTADO DO PARÁ")
+    canvas_pdf.setFont("Helvetica-Bold", 11)
+    canvas_pdf.drawCentredString(
+        largura_pagina / 2, altura_pagina - 3.2 * cm, "SECRETARIA DE ESTADO DE TURISMO – SETUR"
+    )
+    canvas_pdf.setLineWidth(0.75)
+    canvas_pdf.line(1.5 * cm, altura_pagina - 3.5 * cm, largura_pagina - 1.5 * cm, altura_pagina - 3.5 * cm)
+
+    canvas_pdf.setFont("Helvetica", 8)
+    y_rodape = 1.7 * cm
+    for linha in LINHAS_RODAPE_FREQUENCIA:
+        canvas_pdf.drawString(1.5 * cm, y_rodape, linha)
+        y_rodape -= 0.35 * cm
+
+    canvas_pdf.restoreState()
+
+
+def gerar_pdf_frequencia(caminho_saida, funcionarios, mes, ano):
+    """Gera um único PDF com um bloco de frequência por funcionário (nessa
+    ordem), pronto pra imprimir. `funcionarios` é a lista de dicts no formato
+    de ler_funcionarios_planilha, já filtrada pelo setor/lotação escolhido."""
+    documento = SimpleDocTemplate(
+        caminho_saida, pagesize=A4,
+        topMargin=3.9 * cm, bottomMargin=2.3 * cm, leftMargin=1.5 * cm, rightMargin=1.5 * cm,
+    )
+
+    estilo_dado = ParagraphStyle(
+        "dado_funcionario", fontName="Helvetica", fontSize=10, leading=14, alignment=TA_LEFT,
+    )
+    estilo_ciencia = ParagraphStyle("ciencia_chefia", parent=estilo_dado, spaceBefore=10)
+
+    nome_mes_maiusculo = MESES[mes - 1].upper()
+    dias_do_mes = gerar_dias_mes(ano, mes)
+
+    elementos = []
+    for indice, funcionario in enumerate(funcionarios):
+        if indice > 0:
+            elementos.append(PageBreak())
+
+        nome = _escapar_texto_pdf(funcionario["nome"])
+        matricula = _escapar_texto_pdf(funcionario["matricula"]) or "-"
+        lotacao = _escapar_texto_pdf(funcionario["lotacao"])
+        cargo = _escapar_texto_pdf(funcionario["cargo"]) or "-"
+
+        elementos.append(Paragraph(f"<b>NOME:</b> {nome}", estilo_dado))
+        elementos.append(
+            Paragraph(
+                f"<b>MATRÍCULA:</b> {matricula} &nbsp;&nbsp;&nbsp;&nbsp; <b>LOTAÇÃO:</b> {lotacao}",
+                estilo_dado,
+            )
+        )
+        elementos.append(Paragraph(f"<b>CARGO:</b> {cargo}", estilo_dado))
+        elementos.append(Paragraph(f"<b>MÊS/ANO:</b> {nome_mes_maiusculo} DE {ano}", estilo_dado))
+        elementos.append(Spacer(1, 6))
+
+        dados_tabela = [
+            ["DIA", "MANHÃ", "", "TARDE", "", "ASSINATURA"],
+            ["", "ENTRADA", "SAÍDA", "ENTRADA", "SAÍDA", ""],
+        ]
+        comandos_estilo = [
+            ("SPAN", (0, 0), (0, 1)),
+            ("SPAN", (1, 0), (2, 0)),
+            ("SPAN", (3, 0), (4, 0)),
+            ("SPAN", (5, 0), (5, 1)),
+            ("GRID", (0, 0), (-1, -1), 0.6, colors.black),
+            ("FONTNAME", (0, 0), (-1, 1), "Helvetica-Bold"),
+            ("ALIGN", (0, 0), (-1, 1), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+            ("ALIGN", (0, 2), (0, -1), "CENTER"),
+            ("TOPPADDING", (0, 0), (-1, -1), 1.5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5),
+        ]
+
+        linha_atual = 2
+        for dia, rotulo in dias_do_mes:
+            if rotulo:
+                dados_tabela.append([f"{dia:02d}", rotulo, "", "", "", ""])
+                comandos_estilo.append(("SPAN", (1, linha_atual), (5, linha_atual)))
+                comandos_estilo.append(("ALIGN", (1, linha_atual), (1, linha_atual), "CENTER"))
+                comandos_estilo.append(("FONTNAME", (1, linha_atual), (1, linha_atual), "Helvetica-Bold"))
+                comandos_estilo.append(("BACKGROUND", (0, linha_atual), (-1, linha_atual), COR_FUNDO_FIM_DE_SEMANA))
+            else:
+                dados_tabela.append([f"{dia:02d}", "", "", "", "", ""])
+            linha_atual += 1
+
+        larguras_colunas = [1.4 * cm, 2.6 * cm, 2.6 * cm, 2.6 * cm, 2.6 * cm, 6.0 * cm]
+        tabela = Table(dados_tabela, colWidths=larguras_colunas, repeatRows=2)
+        tabela.setStyle(TableStyle(comandos_estilo))
+        elementos.append(tabela)
+
+        elementos.append(Paragraph("CIÊNCIA DA CHEFIA IMEDIATA: " + "_" * 45, estilo_ciencia))
+
+    documento.build(
+        elementos,
+        onFirstPage=_desenhar_cabecalho_frequencia,
+        onLaterPages=_desenhar_cabecalho_frequencia,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1374,6 +1675,172 @@ class AbaGerenciarFuncionarios(ttk.Frame):
 
 
 # ---------------------------------------------------------------------------
+# Aba: Produzir Frequência (gera o PDF a partir da planilha externa do RH)
+# ---------------------------------------------------------------------------
+
+class AbaProduzirFrequencia(ttk.Frame):
+    def __init__(self, master, app):
+        super().__init__(master)
+        self.app = app
+        self._funcionarios_planilha = []
+        self._construir_interface()
+
+    def _construir_interface(self):
+        topo = ttk.Frame(self)
+        topo.pack(fill=tk.X, padx=8, pady=8)
+
+        ttk.Label(topo, text="Mês:").pack(side=tk.LEFT)
+        self.combo_mes = ttk.Combobox(topo, values=MESES, state="readonly", width=12)
+        self.combo_mes.current(datetime.now().month - 1)
+        self.combo_mes.pack(side=tk.LEFT, padx=(4, 12))
+
+        ttk.Label(topo, text="Ano:").pack(side=tk.LEFT)
+        self.entrada_ano = ttk.Entry(topo, width=8)
+        self.entrada_ano.insert(0, str(ano_atual()))
+        self.entrada_ano.pack(side=tk.LEFT, padx=(4, 12))
+
+        ttk.Label(topo, text="Setor (lotação):").pack(side=tk.LEFT)
+        self.combo_setor = ttk.Combobox(topo, state="readonly", width=32)
+        self.combo_setor.pack(side=tk.LEFT, padx=(4, 12))
+
+        ttk.Button(topo, text="Recarregar Planilha", command=self._recarregar_planilha).pack(
+            side=tk.LEFT, padx=(0, 12)
+        )
+        ttk.Button(topo, text="Gerar PDF...", command=self._gerar).pack(side=tk.LEFT)
+
+        self.label_status = ttk.Label(
+            self, text="Planilha ainda não carregada — clique em \"Recarregar Planilha\".",
+            wraplength=820, justify=tk.LEFT,
+        )
+        self.label_status.pack(anchor=tk.W, padx=8, pady=(0, 8))
+
+        ttk.Label(
+            self,
+            text="Lê a planilha de dados do RH (.ods) a cada geração — não duplica esses dados "
+                 "no banco do FreqControl. Gera um único PDF, pronto pra imprimir, com um bloco "
+                 "de frequência por funcionário do setor escolhido.",
+            wraplength=820, justify=tk.LEFT,
+        ).pack(anchor=tk.W, padx=8, pady=(0, 8))
+
+    def atualizar_setores(self):
+        pass  # esta aba não depende do banco do FreqControl, só da planilha externa
+
+    def _caminho_planilha(self, forcar_escolha=False):
+        config = carregar_config()
+        caminho = config.get("planilha_frequencias_path")
+        if caminho and os.path.isfile(caminho) and not forcar_escolha:
+            return caminho
+
+        novo_caminho = filedialog.askopenfilename(
+            title="Selecione a planilha de dados do RH (.ods)",
+            filetypes=[("Planilha ODS", "*.ods")],
+            parent=self,
+        )
+        if not novo_caminho:
+            return None
+        novo_caminho_resolvido = resolver_caminho_unc(novo_caminho)
+        config["planilha_frequencias_path"] = novo_caminho_resolvido
+        salvar_config(config)
+        return novo_caminho_resolvido
+
+    def configurar_planilha(self):
+        """Chamado pelo menu Arquivo para trocar a planilha configurada."""
+        caminho = self._caminho_planilha(forcar_escolha=True)
+        if caminho:
+            self._recarregar_planilha()
+
+    def _recarregar_planilha(self):
+        caminho = self._caminho_planilha()
+        if not caminho:
+            return
+        try:
+            self._funcionarios_planilha = ler_funcionarios_planilha(caminho)
+        except (OSError, zipfile.BadZipFile, ET.ParseError, KeyError) as erro:
+            messagebox.showerror(
+                APP_NOME, f"Não foi possível ler a planilha:\n{caminho}\n\n{erro}", parent=self
+            )
+            self._funcionarios_planilha = []
+            return
+
+        lotacoes = sorted({f["lotacao"] for f in self._funcionarios_planilha}, key=normalizar_texto)
+        self.combo_setor["values"] = lotacoes
+        self.label_status.config(
+            text=f"Planilha carregada: {len(self._funcionarios_planilha)} funcionário(s) em "
+                 f"{len(lotacoes)} lotação(ões). Arquivo: {caminho}"
+        )
+
+    def _gerar(self):
+        if not self._funcionarios_planilha:
+            self._recarregar_planilha()
+            if not self._funcionarios_planilha:
+                return
+
+        lotacao = self.combo_setor.get().strip()
+        if not lotacao:
+            messagebox.showwarning(APP_NOME, "Selecione um setor (lotação).", parent=self)
+            return
+
+        mes_nome = self.combo_mes.get().strip()
+        if mes_nome not in MESES:
+            messagebox.showwarning(APP_NOME, "Selecione um mês válido.", parent=self)
+            return
+        mes = MESES.index(mes_nome) + 1
+
+        ano_texto = self.entrada_ano.get().strip()
+        if not ano_texto.isdigit():
+            messagebox.showwarning(APP_NOME, "Informe um ano válido.", parent=self)
+            return
+        ano = int(ano_texto)
+
+        funcionarios = [f for f in self._funcionarios_planilha if f["lotacao"] == lotacao]
+        if not funcionarios:
+            messagebox.showinfo(
+                APP_NOME, "Nenhum funcionário encontrado para esse setor na planilha.", parent=self
+            )
+            return
+
+        suspeitos = [f for f in funcionarios if f["matricula_suspeita"]]
+        if suspeitos:
+            exemplos = "\n".join(
+                f"- {f['nome']} (matrícula lida: {f['matricula']})" for f in suspeitos
+            )
+            continuar = messagebox.askyesno(
+                APP_NOME,
+                "A matrícula de algum funcionário parece corrompida pela planilha (um número "
+                "decimal longo, sem a barra original) e pode imprimir errada:\n\n"
+                f"{exemplos}\n\n"
+                "O ideal é corrigir isso direto na planilha antes de gerar o documento. "
+                "Deseja continuar mesmo assim?",
+                parent=self,
+            )
+            if not continuar:
+                return
+
+        nome_sugerido = f"Frequencia_{lotacao.replace('/', '-')}_{mes_nome.upper()}_{ano}.pdf"
+        caminho_saida = filedialog.asksaveasfilename(
+            title="Salvar PDF de frequência",
+            defaultextension=".pdf",
+            filetypes=[("Arquivo PDF", "*.pdf")],
+            initialfile=nome_sugerido,
+            parent=self,
+        )
+        if not caminho_saida:
+            return
+
+        try:
+            gerar_pdf_frequencia(caminho_saida, funcionarios, mes, ano)
+        except Exception as erro:
+            messagebox.showerror(APP_NOME, f"Não foi possível gerar o PDF:\n{erro}", parent=self)
+            return
+
+        messagebox.showinfo(
+            APP_NOME,
+            f"PDF gerado com sucesso ({len(funcionarios)} funcionário(s)):\n{caminho_saida}",
+            parent=self,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Aplicativo principal
 # ---------------------------------------------------------------------------
 
@@ -1406,13 +1873,16 @@ class AplicativoFreqControl:
 
         self.aba_consulta_mes = AbaConsultaMes(notebook, banco, self)
         self.aba_consulta_funcionario = AbaConsultaFuncionario(notebook, banco, self)
+        self.aba_produzir_frequencia = AbaProduzirFrequencia(notebook, self)
 
         notebook.add(self.aba_consulta_mes, text="Consultar por Mês")
         notebook.add(self.aba_consulta_funcionario, text="Consulta Detalhada")
+        notebook.add(self.aba_produzir_frequencia, text="Produzir Frequência")
 
         self.abas = (
             self.aba_consulta_mes,
             self.aba_consulta_funcionario,
+            self.aba_produzir_frequencia,
         )
 
         self.atualizar_todas_abas()
@@ -1424,6 +1894,10 @@ class AplicativoFreqControl:
         menu_arquivo.add_command(label="Gerenciar Funcionários...", command=self._abrir_gerenciar)
         menu_arquivo.add_command(
             label="Alterar pasta do banco de dados...", command=self._alterar_pasta_banco
+        )
+        menu_arquivo.add_command(
+            label="Configurar planilha de frequências (.ods)...",
+            command=lambda: self.aba_produzir_frequencia.configurar_planilha(),
         )
         menu_arquivo.add_separator()
         menu_arquivo.add_command(label="Sair", command=self.root.destroy)

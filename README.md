@@ -21,7 +21,14 @@ grava o *caminho* de cada arquivo em um banco de dados (SQLite) compartilhado.
 
 - Windows (usa a API `WNetGetUniversalName` do Windows para resolver caminhos de rede)
 - Python 3.9+ apenas para rodar a partir do código-fonte ou gerar o `.exe` — quem só for **usar** o `.exe` já empacotado não precisa de Python instalado
-- Nenhuma biblioteca externa: usa apenas a biblioteca padrão (`tkinter`, `sqlite3`, `ctypes`, `csv`, `json`, `os`, `sys`)
+- Biblioteca padrão (`tkinter`, `sqlite3`, `ctypes`, `csv`, `json`, `os`, `sys`,
+  `zipfile`, `xml.etree`, `calendar`) para tudo, **exceto** a aba "Produzir
+  Frequência": gerar o PDF da frequência precisa de `reportlab` (e, por
+  consequência, `Pillow`) — a única dependência externa do projeto.
+
+```powershell
+pip install reportlab
+```
 
 ## Como executar a partir do código-fonte
 
@@ -31,16 +38,17 @@ python freqcontrol.py
 
 ## Como gerar o executável (.exe) com PyInstaller
 
-1. Instale o PyInstaller uma única vez (precisa de internet):
+1. Instale o PyInstaller e o reportlab uma única vez (precisa de internet):
 
 ```powershell
-pip install pyinstaller
+pip install pyinstaller reportlab
 ```
 
-2. Na pasta do projeto, gere o executável único:
+2. Na pasta do projeto, gere o executável único (o `--add-data` inclui o
+   brasão usado no cabeçalho do PDF de frequência):
 
 ```powershell
-pyinstaller --onefile --windowed --name FreqControl freqcontrol.py
+pyinstaller --onefile --windowed --name FreqControl --add-data "assets/brasao_para.png;assets" freqcontrol.py
 ```
 
 3. O executável fica em `dist\FreqControl.exe`. Distribua apenas esse arquivo
@@ -54,6 +62,8 @@ Observações:
   PyInstaller empacota para a plataforma onde é executado.
 - As pastas `build\` e o arquivo `FreqControl.spec` gerados pelo PyInstaller
   podem ser apagados depois — só o `dist\FreqControl.exe` importa.
+- O `.exe` fica maior (~20 MB em vez de ~11 MB) por causa do reportlab/Pillow
+  — ainda assim não precisa de nada instalado no computador de destino.
 
 ## Primeira execução (configurar o banco de dados)
 
@@ -149,6 +159,30 @@ ali. Anos anteriores sempre mostram todo mundo, ativo ou não — o histórico d
 quem já entregou frequência naquele ano não desaparece. Escolher um
 funcionário específico no combobox sempre funciona, mesmo que ele esteja
 inativo e seja o ano corrente.
+
+### Aba "Produzir Frequência"
+
+Gera o PDF da folha de frequência em branco (pronta pra imprimir e
+distribuir) de todos os funcionários de um setor, a partir de uma **planilha
+externa do RH** (`.ods`, mantida por outra pessoa, fora do FreqControl) — o
+programa só lê essa planilha a cada geração, nunca importa nem duplica esses
+dados no banco do FreqControl.
+
+1. Na primeira vez, clique em **Recarregar Planilha** e selecione o arquivo
+   `.ods` (o caminho fica salvo; para trocar depois, use
+   **Arquivo → Configurar planilha de frequências (.ods)...**).
+2. Escolha **Mês**, **Ano** e o **Setor (lotação)** — a lista de setores vem
+   direto da coluna `LOTAÇÃO` da planilha (não dos setores cadastrados no
+   FreqControl), então aparece exatamente como está escrito lá, inclusive
+   variações/erros de digitação da própria planilha.
+3. Clique em **Gerar PDF...**. O PDF sai com um bloco por funcionário
+   daquele setor (nome, matrícula, lotação, cargo, e uma tabela com todos os
+   dias do mês — sábados e domingos já calculados e marcados corretamente
+   pelo calendário real, nunca por um padrão fixo), pronto pra imprimir.
+4. Se alguma matrícula da planilha tiver cara de corrompida (um número
+   decimal longo, tipo `2952891.5`, efeito colateral do Excel/Calc — não o
+   valor real), o programa avisa antes de gerar e deixa você cancelar pra
+   corrigir na planilha primeiro, em vez de imprimir uma matrícula errada.
 
 ### Janela "Gerenciar Funcionários" (menu Arquivo → Gerenciar Funcionários...)
 
