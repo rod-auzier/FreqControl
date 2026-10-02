@@ -19,8 +19,20 @@ grava o *caminho* de cada arquivo em um banco de dados (SQLite) compartilhado.
 
 ## Passo a passo para instalação
 
-> Esse guia é pra quem nunca mexeu com isso antes. Se você só vai **usar**
-> o programa (não vai mexer no código), pule direto pro **Passo 5**.
+Existem dois casos bem diferentes — veja qual é o seu:
+
+### Você só vai usar o programa (alguém já gerou o .exe pra você)
+
+Não precisa baixar nada do GitHub nem instalar Python. Peça pra quem gerou
+o `FreqControl.exe` (pendrive, e-mail, pasta de rede — como for mais
+fácil) e copie esse único arquivo pro computador. Dê dois cliques nele pra
+abrir. Pronto — pule direto pro **Passo 6** abaixo (primeira vez que
+abrir).
+
+### Você vai gerar o .exe pela primeira vez (em um Windows de verdade)
+
+Siga os passos 1 a 6 abaixo, nessa ordem, **no mesmo computador** do
+começo ao fim.
 
 **Passo 1: Baixar o programa**
 No GitHub, clique no botão verde **Code** → **Download ZIP**, e extraia a
@@ -29,42 +41,37 @@ pasta em qualquer lugar do computador (ex: `Documentos\FreqControl`).
 **Passo 2: Instalar o Python**
 Baixe em [python.org/downloads](https://www.python.org/downloads/) e
 instale. Na primeira tela do instalador, marque a caixinha **"Add
-python.exe to PATH"** antes de clicar em Install — isso é importante, sem
-isso os comandos abaixo não funcionam.
+python.exe to PATH"** antes de clicar em Install.
 
 **Passo 3: Instalar a peça que falta (reportlab)**
-Abra o PowerShell dentro da pasta onde você extraiu o programa (clique com
-o botão direito numa área vazia da pasta e escolha "Abrir no Terminal" ou
-"Abrir janela do PowerShell aqui") e rode:
+Abra o PowerShell dentro da pasta onde você extraiu o programa e rode:
 
 ```powershell
 pip install reportlab
 ```
 
 **Passo 4: Gerar o programa (.exe)**
-Ainda no PowerShell, na mesma pasta, rode estes dois comandos, um de cada
-vez:
+Ainda no PowerShell, na mesma pasta, rode:
 
 ```powershell
 pip install pyinstaller reportlab
 pyinstaller --onefile --windowed --name FreqControl --add-data "assets/brasao_para.png;assets" freqcontrol.py
 ```
 
-Isso pode demorar um minutinho. Quando terminar, vai aparecer uma pasta
-nova chamada `dist` dentro da pasta do projeto.
+Isso cria uma pasta nova chamada `dist` dentro da pasta do projeto — só
+nesse computador, só depois desse comando.
 
 **Passo 5: Usar o programa**
-Dentro da pasta `dist`, tem um arquivo chamado `FreqControl.exe` — é só dar
-dois cliques nele pra abrir. Esse é o único arquivo que importa: pode
-copiar só ele (pendrive, e-mail, pasta de rede) pra qualquer outro
-computador Windows e usar lá, sem precisar instalar Python nem nada do que
-foi feito nos passos 2 a 4 de novo.
+Dentro da pasta `dist`, tem o arquivo `FreqControl.exe` — dois cliques pra
+abrir. Esse é o único arquivo que precisa ser levado pra outros
+computadores (volte pro início desta seção, "Você só vai usar o programa",
+pra instalar em qualquer outra máquina a partir daqui — sem repetir os
+passos 1 a 4 de novo).
 
 **Passo 6: Primeira vez que abrir**
 Na primeira vez que o FreqControl abrir em um computador, ele vai pedir pra
 escolher a pasta compartilhada do RH onde os dados ficam salvos — escolha a
-pasta certa (a mesma que todo mundo do setor vai usar) e pronto, já pode
-usar.
+pasta certa (a mesma que todo mundo do setor vai usar) e pronto.
 
 > Atenção: o FreqControl só funciona em Windows (os passos 2 a 4 também só
 > funcionam gerando o `.exe` num Windows de verdade, não em Mac/Linux).
