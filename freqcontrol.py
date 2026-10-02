@@ -20,7 +20,7 @@ import tkinter as tk
 import unicodedata
 import zipfile
 import xml.etree.ElementTree as ET
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from tkinter import filedialog, messagebox, ttk
 
 from reportlab.lib import colors
@@ -87,24 +87,32 @@ TEXTO_COMO_USAR = """Como usar o FreqControl
    ativos/inativos aparecem no filtro atual. Dê duplo clique num
    funcionário (ou selecione e use o botão) para alternar o status.
 
-   Importar CSV lê uma relação de quem está ativo hoje (Nome;Setor)
-   e mostra uma tela de revisão com quem entraria/sairia da lista de
-   ativos, já pré-marcado — só aplica depois de clicar Confirmar.
-   Exportar CSV gera essa mesma relação só com os ativos. Nada é
-   apagado — "inativo" é só uma marca reversível que afeta apenas as
-   duas telas de consulta, no ano corrente.
+   Atualizar pela Planilha de Dados lê a mesma planilha (.ods) já
+   usada em "Gerar Frequência" — mostra qual arquivo vai usar e deixa
+   escolher outro na hora, se precisar — e abre uma tela de revisão
+   com quem entraria/sairia da lista de ativos, já pré-marcado — só
+   aplica depois de clicar Confirmar. Exportar CSV gera uma relação
+   (Nome;Setor) só com os ativos, útil como conferência/backup. Nada
+   é apagado — "inativo" é só uma marca reversível que afeta apenas
+   as duas telas de consulta, no ano corrente.
 
 5. Gerar Frequência
-   Gera o PDF da folha de frequência em branco de um setor inteiro, a
-   partir da planilha externa do RH (.ods) — o programa só lê essa
-   planilha a cada geração, nunca importa/duplica esses dados no
-   banco do FreqControl.
+   Gera o PDF da folha de frequência em branco, a partir da planilha
+   externa do RH (.ods) — o programa só lê essa planilha a cada
+   geração, nunca importa/duplica esses dados no banco do
+   FreqControl.
 
    Escolha Mês, Ano e Setor (a lista de setores vem da coluna
-   LOTAÇÃO da própria planilha, exatamente como está escrita lá) e
-   clique em Gerar PDF. Sai um bloco por funcionário, com todos os
-   dias do mês e os sábados/domingos já calculados certinho pelo
-   calendário real. Se alguma matrícula parecer corrompida pela
+   LOTAÇÃO da própria planilha, exatamente como está escrita lá).
+   Dois modos: "Frequência por Setor" (padrão) gera um bloco por
+   funcionário do setor inteiro; "Frequência Individual" mostra um
+   terceiro campo, Funcionário, e gera o PDF só daquela pessoa.
+   Clique em Gerar PDF. A tabela de dias traz os sábados/domingos já
+   calculados certinho pelo calendário real, além dos feriados de
+   data certa (nacionais, estadual do Pará e municipal de Belém)
+   marcados como "FERIADO - <NOME>" — pontos facultativos (Carnaval,
+   Corpus Christi etc.) não entram, pois não têm data fixa de um ano
+   para o outro. Se alguma matrícula parecer corrompida pela
    planilha, o programa avisa antes de gerar.
 
 6. Trocar o banco de dados
@@ -315,13 +323,89 @@ def ler_funcionarios_planilha(caminho_ods):
     return funcionarios
 
 
+def data_pascoa(ano):
+    """Domingo de Páscoa daquele ano, pelo algoritmo de Meeus/Jones/Butcher
+    (só biblioteca padrão — sem precisar de dateutil ou afins)."""
+    a = ano % 19
+    b = ano // 100
+    c = ano % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    mes = (h + l - 7 * m + 114) // 31
+    dia = ((h + l - 7 * m + 114) % 31) + 1
+    return date(ano, mes, dia)
+
+
+def data_sexta_feira_santa(ano):
+    """Sexta-feira Santa: 2 dias antes do Domingo de Páscoa daquele ano."""
+    return data_pascoa(ano) - timedelta(days=2)
+
+
+# Feriados com data certa (nacionais, estadual do Pará e municipal de
+# Belém). NÃO inclui pontos facultativos (Carnaval, Corpus Christi,
+# Recírio, Dia do Servidor Público etc.) — esses são decretados ano a ano
+# sem regra fixa, então não dá pra calcular de forma confiável pra anos
+# futuros.
+FERIADOS_FIXOS_NACIONAIS = [
+    (1, 1, "CONFRATERNIZAÇÃO UNIVERSAL"),
+    (4, 21, "TIRADENTES"),
+    (5, 1, "DIA DO TRABALHO"),
+    (9, 7, "INDEPENDÊNCIA DO BRASIL"),
+    (10, 12, "NOSSA SENHORA APARECIDA"),
+    (11, 2, "FINADOS"),
+    (11, 15, "PROCLAMAÇÃO DA REPÚBLICA"),
+    (12, 25, "NATAL"),
+]
+# Lei nº 14.759/2023 — feriado nacional só a partir de 2024, não existia antes.
+FERIADO_NACIONAL_ZUMBI = (11, 20, "DIA NACIONAL DE ZUMBI E DA CONSCIÊNCIA NEGRA")
+ANO_INICIO_FERIADO_ZUMBI = 2024
+
+FERIADOS_FIXOS_ESTADUAIS_PARA = [
+    (8, 15, "ADESÃO DO GRÃO-PARÁ"),
+]
+FERIADOS_FIXOS_MUNICIPAIS_BELEM = [
+    (1, 12, "ANIVERSÁRIO DE BELÉM"),
+]
+
+
+def gerar_feriados_do_ano(ano):
+    """Retorna um dict {(mes, dia): nome_do_feriado} com todos os feriados
+    de data certa daquele ano (nacionais fixos + Sexta-feira Santa móvel +
+    estadual do Pará + municipal de Belém)."""
+    feriados = {}
+    for mes, dia, nome in FERIADOS_FIXOS_NACIONAIS:
+        feriados[(mes, dia)] = nome
+    if ano >= ANO_INICIO_FERIADO_ZUMBI:
+        mes, dia, nome = FERIADO_NACIONAL_ZUMBI
+        feriados[(mes, dia)] = nome
+    for mes, dia, nome in FERIADOS_FIXOS_ESTADUAIS_PARA:
+        feriados[(mes, dia)] = nome
+    for mes, dia, nome in FERIADOS_FIXOS_MUNICIPAIS_BELEM:
+        feriados[(mes, dia)] = nome
+
+    sexta_santa = data_sexta_feira_santa(ano)
+    feriados[(sexta_santa.month, sexta_santa.day)] = "SEXTA-FEIRA SANTA"
+
+    return feriados
+
+
 def gerar_dias_mes(ano, mes):
     """Retorna uma lista de (dia, rotulo_especial) cobrindo o mês inteiro,
-    com rotulo_especial = "SÁBADO"/"DOMINGO" nos finais de semana. O dia da
-    semana é calculado de verdade pelo calendário (nunca copiado de um
-    padrão fixo), então funciona igual pra qualquer mês/ano, incluindo
-    fevereiro bissexto ou não."""
+    com rotulo_especial = "SÁBADO"/"DOMINGO" nos finais de semana ou
+    "FERIADO - <NOME>" nos feriados de data certa. O dia da semana é
+    calculado de verdade pelo calendário (nunca copiado de um padrão
+    fixo), então funciona igual pra qualquer mês/ano, incluindo fevereiro
+    bissexto ou não. Se um feriado cair num fim de semana, prevalece o
+    rótulo SÁBADO/DOMINGO (não mostra os dois)."""
     _, ultimo_dia = calendar.monthrange(ano, mes)
+    feriados_do_ano = gerar_feriados_do_ano(ano)
     dias = []
     for dia in range(1, ultimo_dia + 1):
         dia_da_semana = date(ano, mes, dia).weekday()  # 5 = sábado, 6 = domingo
@@ -330,7 +414,8 @@ def gerar_dias_mes(ano, mes):
         elif dia_da_semana == 6:
             rotulo = "DOMINGO"
         else:
-            rotulo = None
+            nome_feriado = feriados_do_ano.get((mes, dia))
+            rotulo = f"FERIADO - {nome_feriado}" if nome_feriado else None
         dias.append((dia, rotulo))
     return dias
 
@@ -1409,7 +1494,9 @@ class AbaGerenciarFuncionarios(ttk.Frame):
         botoes = ttk.Frame(self)
         botoes.pack(fill=tk.X, padx=8, pady=(0, 4))
         ttk.Button(botoes, text="Alternar Ativo/Inativo", command=self._alternar_status).pack(side=tk.LEFT)
-        ttk.Button(botoes, text="Importar CSV...", command=self._importar_csv).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(
+            botoes, text="Atualizar pela Planilha de Dados...", command=self._atualizar_pela_planilha
+        ).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(botoes, text="Exportar CSV...", command=self._exportar_csv).pack(side=tk.LEFT, padx=(8, 0))
 
         self.label_resumo = ttk.Label(self, text="")
@@ -1476,64 +1563,117 @@ class AbaGerenciarFuncionarios(ttk.Frame):
         self.banco.alternar_ativo_funcionario(funcionario_id)
         self.atualizar()
 
-    def _importar_csv(self):
-        """Importa uma relação de funcionários atualmente ativos (Nome;Setor,
-        uma linha por pessoa). Quem está ativo no banco mas não aparece nessa
-        lista vira candidato a inativar; quem está inativo no banco e aparece
-        na lista vira candidato a reativar. Nada é aplicado sem revisão."""
-        caminho = filedialog.askopenfilename(
-            title="Importar relação de funcionários ativos (Nome;Setor)",
-            filetypes=[("Arquivo CSV", "*.csv")],
+    def _confirmar_planilha_atual(self, caminho):
+        """Mostra qual planilha será usada e deixa escolher outra na hora.
+        Retorna "continuar", "escolher" ou None (usuário cancelou)."""
+        resultado = {"valor": None}
+        janela = tk.Toplevel(self)
+        janela.title(APP_NOME)
+        janela.transient(self.winfo_toplevel())
+        janela.grab_set()
+        janela.resizable(False, False)
+
+        ttk.Label(
+            janela,
+            text=f"Vai usar a planilha:\n{caminho}\n\nContinuar?",
+            wraplength=480, justify=tk.LEFT,
+        ).pack(padx=16, pady=16)
+
+        def escolher(valor):
+            resultado["valor"] = valor
+            janela.destroy()
+
+        botoes = ttk.Frame(janela)
+        botoes.pack(pady=(0, 16))
+        ttk.Button(botoes, text="Continuar", command=lambda: escolher("continuar")).pack(
+            side=tk.LEFT, padx=8
         )
-        if not caminho:
-            return
+        ttk.Button(
+            botoes, text="Escolher outro arquivo...", command=lambda: escolher("escolher")
+        ).pack(side=tk.LEFT, padx=8)
+        ttk.Button(botoes, text="Cancelar", command=lambda: escolher(None)).pack(side=tk.LEFT, padx=8)
+
+        janela.protocol("WM_DELETE_WINDOW", lambda: escolher(None))
+        janela.wait_window()
+        return resultado["valor"]
+
+    def _selecionar_nova_planilha(self):
+        """Abre o seletor de arquivo para escolher a planilha (.ods) e salva
+        o caminho escolhido como o configurado — mesmo efeito de usar o menu
+        Arquivo → Configurar planilha de dados do RH (.ods)..."""
+        novo_caminho = filedialog.askopenfilename(
+            title="Selecione a planilha de dados do RH (.ods)",
+            filetypes=[("Planilha ODS", "*.ods")],
+            parent=self,
+        )
+        if not novo_caminho:
+            return None
+        novo_caminho_resolvido = resolver_caminho_unc(novo_caminho)
+        config = carregar_config()
+        config["planilha_frequencias_path"] = novo_caminho_resolvido
+        salvar_config(config)
+        return novo_caminho_resolvido
+
+    def _atualizar_pela_planilha(self):
+        """Atualiza quem está ativo/inativo lendo a mesma planilha externa do
+        RH (.ods) já usada na aba "Gerar Frequência" (mesma lógica de
+        leitura — GERAL ignorada, CEDIDOS usa o nome da aba como lotação).
+        Sempre mostra/deixa trocar qual arquivo será lido antes de ler. Quem
+        está ativo no banco mas não aparece na planilha vira candidato a
+        inativar; quem está inativo no banco e aparece na planilha vira
+        candidato a reativar. Nada é aplicado sem revisão. Nunca cria
+        funcionário ou setor novo."""
+        config = carregar_config()
+        caminho = config.get("planilha_frequencias_path")
+        if caminho and os.path.isfile(caminho):
+            escolha = self._confirmar_planilha_atual(caminho)
+            if escolha is None:
+                return
+            if escolha == "escolher":
+                caminho = self._selecionar_nova_planilha()
+                if not caminho:
+                    return
+        else:
+            caminho = self._selecionar_nova_planilha()
+            if not caminho:
+                return
+
         try:
-            with open(caminho, "r", newline="", encoding="utf-8-sig") as arquivo:
-                linhas = list(csv.reader(arquivo, delimiter=";"))
-        except (OSError, UnicodeDecodeError) as erro:
-            messagebox.showerror(APP_NOME, f"Não foi possível ler o CSV:\n{erro}", parent=self)
+            funcionarios_planilha = ler_funcionarios_planilha(caminho)
+        except (OSError, zipfile.BadZipFile, ET.ParseError, KeyError) as erro:
+            messagebox.showerror(
+                APP_NOME, f"Não foi possível ler a planilha:\n{caminho}\n\n{erro}", parent=self
+            )
             return
 
-        if linhas and [c.strip().lower() for c in linhas[0][:2]] == ["nome", "setor"]:
-            linhas = linhas[1:]  # pula o cabeçalho, se houver
-
-        nomes_csv = set()
-        for linha in linhas:
-            if not linha or not linha[0].strip():
-                continue
-            nomes_csv.add(normalizar_texto(linha[0]))
-
-        if not nomes_csv:
+        nomes_planilha = {normalizar_texto(f["nome"]) for f in funcionarios_planilha}
+        if not nomes_planilha:
             messagebox.showwarning(
-                APP_NOME,
-                "Não foi possível ler nenhum nome válido desse CSV. Confira se o "
-                "arquivo usa ';' como separador e a primeira coluna é o nome do "
-                "funcionário (Nome;Setor).",
-                parent=self,
+                APP_NOME, "Não foi encontrado nenhum funcionário válido na planilha.", parent=self
             )
             return
 
         candidatos_inativar = []
         candidatos_reativar = []
         for funcionario in self.banco.listar_funcionarios():
-            esta_na_lista = normalizar_texto(funcionario["nome"]) in nomes_csv
-            if funcionario["ativo"] and not esta_na_lista:
+            esta_na_planilha = normalizar_texto(funcionario["nome"]) in nomes_planilha
+            if funcionario["ativo"] and not esta_na_planilha:
                 candidatos_inativar.append(funcionario)
-            elif not funcionario["ativo"] and esta_na_lista:
+            elif not funcionario["ativo"] and esta_na_planilha:
                 candidatos_reativar.append(funcionario)
 
         if not candidatos_inativar and not candidatos_reativar:
             messagebox.showinfo(
                 APP_NOME,
-                f"CSV lido: {len(nomes_csv)} nome(s). Nenhuma mudança de status "
-                "necessária — todo mundo já está com o status certo.",
+                f"Planilha lida: {len(nomes_planilha)} funcionário(s). Nenhuma mudança de "
+                "status necessária — todo mundo já está com o status certo.",
                 parent=self,
             )
             return
 
-        self._abrir_revisao_importacao(len(nomes_csv), candidatos_inativar, candidatos_reativar)
+        self._abrir_revisao_importacao(len(nomes_planilha), candidatos_inativar, candidatos_reativar)
 
-    def _abrir_revisao_importacao(self, total_csv, candidatos_inativar, candidatos_reativar):
+    def _abrir_revisao_importacao(self, total_planilha, candidatos_inativar, candidatos_reativar):
         janela = tk.Toplevel(self)
         janela.title(f"{APP_NOME} — Revisar importação")
         janela.geometry("650x520")
@@ -1544,7 +1684,7 @@ class AbaGerenciarFuncionarios(ttk.Frame):
         ttk.Label(
             janela,
             text=(
-                f"CSV lido: {total_csv} nome(s).   "
+                f"Planilha lida: {total_planilha} nome(s).   "
                 f"Candidatos a inativar: {len(candidatos_inativar)}.   "
                 f"Candidatos a reativar: {len(candidatos_reativar)}."
             ),
@@ -1653,8 +1793,8 @@ class AbaGerenciarFuncionarios(ttk.Frame):
         janela.protocol("WM_DELETE_WINDOW", cancelar)
 
     def _exportar_csv(self):
-        """Exporta a relação dos funcionários ATIVOS (Nome;Setor) — no formato
-        esperado pelo Importar CSV, útil como ponto de partida ou conferência."""
+        """Exporta a relação dos funcionários ATIVOS (Nome;Setor) — útil como
+        backup ou conferência de quem está marcado como ativo no momento."""
         caminho = filedialog.asksaveasfilename(
             title="Exportar relação de funcionários ativos",
             defaultextension=".csv",
@@ -1709,6 +1849,27 @@ class AbaProduzirFrequencia(ttk.Frame):
         )
         ttk.Button(topo, text="Gerar PDF...", command=self._gerar).pack(side=tk.LEFT)
 
+        linha_modo = ttk.Frame(self)
+        linha_modo.pack(fill=tk.X, padx=8, pady=(0, 8))
+
+        self.var_modo = tk.StringVar(value="setor")
+        ttk.Radiobutton(
+            linha_modo, text="Frequência por Setor", variable=self.var_modo, value="setor",
+            command=self._ao_mudar_modo,
+        ).pack(side=tk.LEFT)
+        ttk.Radiobutton(
+            linha_modo, text="Frequência Individual", variable=self.var_modo, value="individual",
+            command=self._ao_mudar_modo,
+        ).pack(side=tk.LEFT, padx=(12, 0))
+
+        self.frame_funcionario = ttk.Frame(linha_modo)
+        ttk.Label(self.frame_funcionario, text="Funcionário:").pack(side=tk.LEFT)
+        self.combo_funcionario = ttk.Combobox(self.frame_funcionario, state="readonly", width=32)
+        self.combo_funcionario.pack(side=tk.LEFT, padx=(4, 0))
+        # começa escondido: só aparece quando o modo Individual é escolhido
+
+        self.combo_setor.bind("<<ComboboxSelected>>", lambda evento: self._atualizar_funcionarios_do_setor())
+
         self.label_status = ttk.Label(
             self, text="Planilha ainda não carregada — clique em \"Recarregar Planilha\".",
             wraplength=820, justify=tk.LEFT,
@@ -1718,13 +1879,31 @@ class AbaProduzirFrequencia(ttk.Frame):
         ttk.Label(
             self,
             text="Lê a planilha de dados do RH (.ods) a cada geração — não duplica esses dados "
-                 "no banco do FreqControl. Gera um único PDF, pronto pra imprimir, com um bloco "
-                 "de frequência por funcionário do setor escolhido.",
+                 "no banco do FreqControl. No modo \"Frequência por Setor\" gera um único PDF "
+                 "com um bloco por funcionário do setor escolhido; no modo \"Frequência "
+                 "Individual\" gera um PDF com o bloco só do funcionário escolhido.",
             wraplength=820, justify=tk.LEFT,
         ).pack(anchor=tk.W, padx=8, pady=(0, 8))
 
     def atualizar_setores(self):
         pass  # esta aba não depende do banco do FreqControl, só da planilha externa
+
+    def _ao_mudar_modo(self):
+        if self.var_modo.get() == "individual":
+            self.frame_funcionario.pack(side=tk.LEFT, padx=(12, 0))
+            self._atualizar_funcionarios_do_setor()
+        else:
+            self.frame_funcionario.pack_forget()
+
+    def _atualizar_funcionarios_do_setor(self):
+        lotacao = self.combo_setor.get().strip()
+        nomes = sorted(
+            {f["nome"] for f in self._funcionarios_planilha if f["lotacao"] == lotacao},
+            key=normalizar_texto,
+        )
+        self.combo_funcionario["values"] = nomes
+        if self.combo_funcionario.get() not in nomes:
+            self.combo_funcionario.set("")
 
     def _caminho_planilha(self, forcar_escolha=False):
         config = carregar_config()
@@ -1775,6 +1954,7 @@ class AbaProduzirFrequencia(ttk.Frame):
 
         lotacoes = sorted({f["lotacao"] for f in self._funcionarios_planilha}, key=normalizar_texto)
         self.combo_setor["values"] = lotacoes
+        self._atualizar_funcionarios_do_setor()
         self.label_status.config(
             text=f"Planilha carregada: {len(self._funcionarios_planilha)} funcionário(s) em "
                  f"{len(lotacoes)} lotação(ões). Arquivo: {caminho}"
@@ -1801,6 +1981,7 @@ class AbaProduzirFrequencia(ttk.Frame):
 
         lotacoes = sorted({f["lotacao"] for f in self._funcionarios_planilha}, key=normalizar_texto)
         self.combo_setor["values"] = lotacoes
+        self._atualizar_funcionarios_do_setor()
         self.label_status.config(
             text=f"Planilha carregada: {len(self._funcionarios_planilha)} funcionário(s) em "
                  f"{len(lotacoes)} lotação(ões). Arquivo: {caminho}"
@@ -1829,12 +2010,26 @@ class AbaProduzirFrequencia(ttk.Frame):
             return
         ano = int(ano_texto)
 
+        modo_individual = self.var_modo.get() == "individual"
+
         funcionarios = [f for f in self._funcionarios_planilha if f["lotacao"] == lotacao]
         if not funcionarios:
             messagebox.showinfo(
                 APP_NOME, "Nenhum funcionário encontrado para esse setor na planilha.", parent=self
             )
             return
+
+        if modo_individual:
+            nome_funcionario = self.combo_funcionario.get().strip()
+            if not nome_funcionario:
+                messagebox.showwarning(APP_NOME, "Selecione um funcionário.", parent=self)
+                return
+            funcionarios = [f for f in funcionarios if f["nome"] == nome_funcionario]
+            if not funcionarios:
+                messagebox.showinfo(
+                    APP_NOME, "Funcionário não encontrado nesse setor na planilha.", parent=self
+                )
+                return
 
         suspeitos = [f for f in funcionarios if f["matricula_suspeita"]]
         if suspeitos:
@@ -1853,7 +2048,14 @@ class AbaProduzirFrequencia(ttk.Frame):
             if not continuar:
                 return
 
-        nome_sugerido = f"Frequencia_{lotacao.replace('/', '-')}_{mes_nome.upper()}_{ano}.pdf"
+        if modo_individual:
+            nome_arquivo_funcionario = funcionarios[0]["nome"].replace("/", "-")
+            nome_sugerido = (
+                f"Frequencia_{lotacao.replace('/', '-')}_{nome_arquivo_funcionario}_"
+                f"{mes_nome.upper()}_{ano}.pdf"
+            )
+        else:
+            nome_sugerido = f"Frequencia_{lotacao.replace('/', '-')}_{mes_nome.upper()}_{ano}.pdf"
         caminho_saida = filedialog.asksaveasfilename(
             title="Salvar PDF de frequência",
             defaultextension=".pdf",
@@ -1933,7 +2135,7 @@ class AplicativoFreqControl:
             label="Alterar pasta do banco de dados...", command=self._alterar_pasta_banco
         )
         menu_arquivo.add_command(
-            label="Configurar planilha de frequências (.ods)...",
+            label="Configurar planilha de dados do RH (.ods)...",
             command=lambda: self.aba_produzir_frequencia.configurar_planilha(),
         )
         menu_arquivo.add_separator()

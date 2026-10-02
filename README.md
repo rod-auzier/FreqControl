@@ -17,6 +17,58 @@ Programa desktop leve para o RH **catalogar e consultar** os PDFs de frequência
 **O programa nunca move, copia, renomeia ou apaga nenhum PDF.** Ele apenas lê e
 grava o *caminho* de cada arquivo em um banco de dados (SQLite) compartilhado.
 
+## Passo a passo para instalação
+
+> Esse guia é pra quem nunca mexeu com isso antes. Se você só vai **usar**
+> o programa (não vai mexer no código), pule direto pro **Passo 5**.
+
+**Passo 1: Baixar o programa**
+No GitHub, clique no botão verde **Code** → **Download ZIP**, e extraia a
+pasta em qualquer lugar do computador (ex: `Documentos\FreqControl`).
+
+**Passo 2: Instalar o Python**
+Baixe em [python.org/downloads](https://www.python.org/downloads/) e
+instale. Na primeira tela do instalador, marque a caixinha **"Add
+python.exe to PATH"** antes de clicar em Install — isso é importante, sem
+isso os comandos abaixo não funcionam.
+
+**Passo 3: Instalar a peça que falta (reportlab)**
+Abra o PowerShell dentro da pasta onde você extraiu o programa (clique com
+o botão direito numa área vazia da pasta e escolha "Abrir no Terminal" ou
+"Abrir janela do PowerShell aqui") e rode:
+
+```powershell
+pip install reportlab
+```
+
+**Passo 4: Gerar o programa (.exe)**
+Ainda no PowerShell, na mesma pasta, rode estes dois comandos, um de cada
+vez:
+
+```powershell
+pip install pyinstaller reportlab
+pyinstaller --onefile --windowed --name FreqControl --add-data "assets/brasao_para.png;assets" freqcontrol.py
+```
+
+Isso pode demorar um minutinho. Quando terminar, vai aparecer uma pasta
+nova chamada `dist` dentro da pasta do projeto.
+
+**Passo 5: Usar o programa**
+Dentro da pasta `dist`, tem um arquivo chamado `FreqControl.exe` — é só dar
+dois cliques nele pra abrir. Esse é o único arquivo que importa: pode
+copiar só ele (pendrive, e-mail, pasta de rede) pra qualquer outro
+computador Windows e usar lá, sem precisar instalar Python nem nada do que
+foi feito nos passos 2 a 4 de novo.
+
+**Passo 6: Primeira vez que abrir**
+Na primeira vez que o FreqControl abrir em um computador, ele vai pedir pra
+escolher a pasta compartilhada do RH onde os dados ficam salvos — escolha a
+pasta certa (a mesma que todo mundo do setor vai usar) e pronto, já pode
+usar.
+
+> Atenção: o FreqControl só funciona em Windows (os passos 2 a 4 também só
+> funcionam gerando o `.exe` num Windows de verdade, não em Mac/Linux).
+
 ## Requisitos
 
 - Windows (usa a API `WNetGetUniversalName` do Windows para resolver caminhos de rede)
@@ -163,14 +215,13 @@ inativo e seja o ano corrente.
 ### Aba "Gerar Frequência"
 
 Gera o PDF da folha de frequência em branco (pronta pra imprimir e
-distribuir) de todos os funcionários de um setor, a partir de uma **planilha
-externa do RH** (`.ods`, mantida por outra pessoa, fora do FreqControl) — o
-programa só lê essa planilha a cada geração, nunca importa nem duplica esses
-dados no banco do FreqControl.
+distribuir), a partir de uma **planilha externa do RH** (`.ods`, mantida por
+outra pessoa, fora do FreqControl) — o programa só lê essa planilha a cada
+geração, nunca importa nem duplica esses dados no banco do FreqControl.
 
 1. Na primeira vez, clique em **Recarregar Planilha** e selecione o arquivo
    `.ods` (o caminho fica salvo; para trocar depois, use
-   **Arquivo → Configurar planilha de frequências (.ods)...**). Da próxima
+   **Arquivo → Configurar planilha de dados do RH (.ods)...**). Da próxima
    vez que o programa abrir, a planilha já carrega sozinha — **Recarregar
    Planilha** só é necessário se o arquivo for atualizado enquanto o
    programa já está aberto. Se o carregamento automático falhar (rede fora
@@ -180,11 +231,28 @@ dados no banco do FreqControl.
    direto da coluna `LOTAÇÃO` da planilha (não dos setores cadastrados no
    FreqControl), então aparece exatamente como está escrito lá, inclusive
    variações/erros de digitação da própria planilha.
-3. Clique em **Gerar PDF...**. O PDF sai com um bloco por funcionário
-   daquele setor (nome, matrícula, lotação, cargo, e uma tabela com todos os
-   dias do mês — sábados e domingos já calculados e marcados corretamente
-   pelo calendário real, nunca por um padrão fixo), pronto pra imprimir.
-4. Se alguma matrícula da planilha tiver cara de corrompida (um número
+3. Escolha o modo, logo abaixo dos filtros:
+   - **Frequência por Setor** (padrão): gera um único PDF com um bloco por
+     funcionário de todo o setor escolhido — igual ao comportamento de
+     sempre.
+   - **Frequência Individual**: mostra um terceiro campo, **Funcionário**
+     (lista só quem está naquele setor, na própria planilha), e gera um PDF
+     com o bloco só daquela pessoa. O nome do arquivo sugerido inclui o
+     nome do funcionário, ex: `Frequencia_ASCOM_FULANO_DE_TAL_ABRIL_2026.pdf`.
+4. Clique em **Gerar PDF...**. A tabela de dias traz os sábados e domingos
+   já calculados e marcados corretamente pelo calendário real, nunca por um
+   padrão fixo. Feriados de data certa também são marcados, como
+   `FERIADO - <NOME>`: nacionais fixos (Confraternização Universal,
+   Tiradentes, Dia do Trabalho, Independência, Nossa Senhora Aparecida,
+   Finados, Proclamação da República, Natal, e o Dia Nacional de Zumbi e da
+   Consciência Negra a partir de 2024), a Sexta-feira Santa (móvel,
+   calculada a partir da Páscoa daquele ano) e os feriados estadual do
+   Pará (Adesão do Grão-Pará) e municipal de Belém (Aniversário de
+   Belém). **Pontos facultativos** (Carnaval, Corpus Christi, Recírio,
+   Dia do Servidor Público etc.) não entram, pois são decretados ano a
+   ano sem data fixa. Se um feriado cair num sábado ou domingo, a célula
+   continua mostrando só "SÁBADO"/"DOMINGO" (sem duplicar o aviso).
+5. Se alguma matrícula da planilha tiver cara de corrompida (um número
    decimal longo, tipo `2952891.5`, efeito colateral do Excel/Calc — não o
    valor real), o programa avisa antes de gerar e deixa você cancelar pra
    corrigir na planilha primeiro, em vez de imprimir uma matrícula errada.
@@ -199,19 +267,25 @@ mais das consultas do ano corrente, sem apagar nada do histórico.
   ex: `3 funcionários — 1 ativo, 2 inativos`.
 - **Alternar Ativo/Inativo**: selecione um funcionário na lista e clique no
   botão (ou dê duplo clique na linha) para trocar o status.
-- **Importar CSV...**: lê uma **relação de quem está ativo hoje** — arquivo
-  `Nome;Setor` (uma linha por pessoa, com ou sem cabeçalho; a coluna Setor é
-  só informativa, a comparação é pelo nome). Quem está ativo no banco mas não
-  aparece nessa lista vira candidato a **inativar**; quem está inativo no
-  banco e aparece na lista vira candidato a **reativar**. Nada é aplicado na
-  hora — abre uma **tela de revisão** com os candidatos já pré-marcados
+- **Atualizar pela Planilha de Dados...**: lê a **mesma planilha externa do
+  RH (`.ods`)** já usada na aba "Gerar Frequência", com a mesma lógica de
+  leitura de lá: uma aba por setor, `GERAL` ignorada, `CEDIDOS` (sem coluna
+  LOTAÇÃO própria) tratada como lotação fixa `"CEDIDOS"`, linhas sem nome ou
+  sem lotação puladas. Se já existe uma planilha configurada, mostra o
+  caminho completo e pergunta **Continuar** (usa esse arquivo) ou **Escolher
+  outro arquivo...** (abre o seletor, troca o arquivo configurado daqui pra
+  frente — mesmo efeito de usar o menu **Arquivo → Configurar planilha de
+  dados do RH (.ods)...**); se ainda não tem nenhuma planilha configurada,
+  abre o seletor de arquivo direto. Quem está ativo no banco mas não aparece
+  na planilha vira candidato a **inativar**; quem está inativo no banco e
+  aparece na planilha vira candidato a **reativar**. Nada é aplicado na hora
+  — abre a mesma **tela de revisão** com os candidatos já pré-marcados
   (desmarque o que não quiser aplicar) e só grava no banco depois de clicar
-  em **Confirmar**. Comparação tolerante a acento/maiúsculas. Essa tela nunca
-  cria funcionário ou setor novo — só ajusta o status de quem já foi
-  catalogado.
-- **Exportar CSV**: gera a mesma relação (`Nome;Setor`) só dos funcionários
-  **ativos** — serve de ponto de partida ou conferência para a próxima
-  importação.
+  em **Confirmar**. Comparação pelo nome, tolerante a acento/maiúsculas (não
+  usa matrícula). Essa tela nunca cria funcionário ou setor novo — só ajusta
+  o status de quem já foi catalogado.
+- **Exportar CSV**: gera uma relação (`Nome;Setor`) só dos funcionários
+  **ativos** — serve de conferência ou backup de quem está ativo no momento.
 
 Como sempre: nenhum PDF, funcionário, setor ou frequência é apagado por essa
 tela — "inativo" é só uma marca reversível.
